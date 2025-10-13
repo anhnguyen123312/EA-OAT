@@ -30,6 +30,8 @@ struct SweepSignal {
     int      barsAge;
     int      ttl;
     bool     valid;
+    int      fractalIndex;   // Index of fractal that was swept
+    int      distanceBars;   // Distance from sweep candle to fractal
 };
 
 struct OrderBlock {
@@ -41,6 +43,9 @@ struct OrderBlock {
     datetime createdTime;
     int      barsAge;
     int      ttl;
+    long     volume;         // Tick volume of OB candle
+    bool     weak;           // True if volume below threshold
+    bool     isBreaker;      // True if OB was invalidated and became breaker
 };
 
 struct FVGSignal {
@@ -53,6 +58,8 @@ struct FVGSignal {
     datetime createdTime;
     int      barsAge;
     int      ttl;
+    double   initialSize;    // Original gap size
+    bool     mtfConfirmed;   // True if confirmed on higher timeframe
 };
 
 struct MomentumSignal {
@@ -83,6 +90,7 @@ private:
     double   m_low[];
     double   m_open[];
     double   m_close[];
+    long     m_volume[];     // Tick volume
     
     // Detection parameters
     int      m_fractalK;
@@ -130,6 +138,7 @@ public:
     OrderBlock    FindOB(int direction);
     FVGSignal     FindFVG(int direction);
     MomentumSignal DetectMomentum();
+    int           GetMTFBias();  // Multi-Timeframe Bias: +1=bullish, -1=bearish, 0=neutral
     
 private:
     bool IsSwingHigh(int index, int K);
@@ -148,6 +157,7 @@ CDetector::CDetector() {
     ArraySetAsSeries(m_low, true);
     ArraySetAsSeries(m_open, true);
     ArraySetAsSeries(m_close, true);
+    ArraySetAsSeries(m_volume, true);
 }
 
 //+------------------------------------------------------------------+
@@ -222,6 +232,7 @@ void CDetector::UpdateSeries() {
     CopyLow(m_symbol, m_timeframe, 0, bars, m_low);
     CopyOpen(m_symbol, m_timeframe, 0, bars, m_open);
     CopyClose(m_symbol, m_timeframe, 0, bars, m_close);
+    CopyTickVolume(m_symbol, m_timeframe, 0, bars, m_volume);
     CopyBuffer(m_atrHandle, 0, 0, 60, m_atr);
 }
 
@@ -344,7 +355,7 @@ BOSSignal CDetector::DetectBOS() {
 }
 
 //+------------------------------------------------------------------+
-//| Detect Liquidity Sweep                                           |
+//| Detect Liquidity Sweep (Fractal-based multi-candle algorithm)   |
 //+------------------------------------------------------------------+
 SweepSignal CDetector::DetectSweep() {
     SweepSignal sweep;
@@ -353,53 +364,66 @@ SweepSignal CDetector::DetectSweep() {
     sweep.side = 0;
     sweep.barsAge = 0;
     sweep.ttl = m_sweep_TTL;
+    sweep.fractalIndex = -1;
+    sweep.distanceBars = 0;
     
     if(ArraySize(m_high) < m_lookbackLiq + 4) return sweep;
     
-    // Find max high and min low in lookback (starting from bar 4)
-    double maxHigh = m_high[4];
-    double minLow = m_low[4];
-    for(int i = 5; i <= m_lookbackLiq + 4; i++) {
-        if(m_high[i] > maxHigh) maxHigh = m_high[i];
-        if(m_low[i] < minLow) minLow = m_low[i];
-    }
+    int skipBars = 1; // Skip bars adjacent to current candle
     
-    // Scan bars 0-3 for recent sweep
-    for(int bar = 0; bar <= 3; bar++) {
-        double currentHigh = m_high[bar];
-        double currentLow = m_low[bar];
-        double currentClose = m_close[bar];
-        double currentOpen = m_open[bar];
+    // Scan bars 0-3 for recent sweep candle
+    for(int i = 0; i <= 3; i++) {
+        double currentHigh = m_high[i];
+        double currentLow = m_low[i];
+        double currentClose = m_close[i];
+        double currentOpen = m_open[i];
         double candleRange = currentHigh - currentLow;
         
         if(candleRange <= 0) continue;
         
-        // Check for buy-side sweep (high sweep)
-        double upperWick = currentHigh - MathMax(currentClose, currentOpen);
-        double upperWickPct = (upperWick / candleRange) * 100.0;
-        
-        if(currentHigh > maxHigh && 
-           (currentClose <= maxHigh || upperWickPct >= m_minWickPct)) {
-            sweep.detected = true;
-            sweep.valid = true;
-            sweep.side = 1; // buy-side
-            sweep.level = currentHigh;
-            sweep.time = iTime(m_symbol, m_timeframe, bar);
-            return sweep;
-        }
-        
-        // Check for sell-side sweep (low sweep)
-        double lowerWick = MathMin(currentClose, currentOpen) - currentLow;
-        double lowerWickPct = (lowerWick / candleRange) * 100.0;
-        
-        if(currentLow < minLow && 
-           (currentClose >= minLow || lowerWickPct >= m_minWickPct)) {
-            sweep.detected = true;
-            sweep.valid = true;
-            sweep.side = -1; // sell-side
-            sweep.level = currentLow;
-            sweep.time = iTime(m_symbol, m_timeframe, bar);
-            return sweep;
+        // Look for fractal high/low in past that was swept
+        for(int j = i + skipBars + 1; j <= m_lookbackLiq; j++) {
+            // Check if j is a fractal high (swing high with K=m_fractalK)
+            if(IsSwingHigh(j, m_fractalK)) {
+                double fractalHigh = m_high[j];
+                
+                // Check if current candle swept above fractal then closed below (buy-side sweep)
+                double upperWick = currentHigh - MathMax(currentClose, currentOpen);
+                double upperWickPct = (upperWick / candleRange) * 100.0;
+                
+                if(currentHigh > fractalHigh && 
+                   (currentClose < fractalHigh || upperWickPct >= m_minWickPct)) {
+                    sweep.detected = true;
+                    sweep.valid = true;
+                    sweep.side = 1; // buy-side
+                    sweep.level = fractalHigh;
+                    sweep.time = iTime(m_symbol, m_timeframe, i);
+                    sweep.fractalIndex = j;
+                    sweep.distanceBars = j - i;
+                    return sweep;
+                }
+            }
+            
+            // Check if j is a fractal low (swing low with K=m_fractalK)
+            if(IsSwingLow(j, m_fractalK)) {
+                double fractalLow = m_low[j];
+                
+                // Check if current candle swept below fractal then closed above (sell-side sweep)
+                double lowerWick = MathMin(currentClose, currentOpen) - currentLow;
+                double lowerWickPct = (lowerWick / candleRange) * 100.0;
+                
+                if(currentLow < fractalLow && 
+                   (currentClose > fractalLow || lowerWickPct >= m_minWickPct)) {
+                    sweep.detected = true;
+                    sweep.valid = true;
+                    sweep.side = -1; // sell-side
+                    sweep.level = fractalLow;
+                    sweep.time = iTime(m_symbol, m_timeframe, i);
+                    sweep.fractalIndex = j;
+                    sweep.distanceBars = j - i;
+                    return sweep;
+                }
+            }
         }
     }
     
@@ -416,6 +440,9 @@ OrderBlock CDetector::FindOB(int direction) {
     ob.touches = 0;
     ob.barsAge = 0;
     ob.ttl = m_ob_TTL;
+    ob.volume = 0;
+    ob.weak = false;
+    ob.isBreaker = false;
     
     if(direction == 0 || ArraySize(m_close) < 80) return ob;
     
@@ -430,6 +457,7 @@ OrderBlock CDetector::FindOB(int direction) {
                     ob.priceBottom = m_open[i];
                     ob.priceTop = m_high[i];
                     ob.createdTime = iTime(m_symbol, m_timeframe, i);
+                    ob.volume = m_volume[i];
                     
                     // Count touches
                     for(int j = i - 1; j >= 0; j--) {
@@ -451,6 +479,7 @@ OrderBlock CDetector::FindOB(int direction) {
                     ob.priceBottom = m_low[i];
                     ob.priceTop = m_close[i];
                     ob.createdTime = iTime(m_symbol, m_timeframe, i);
+                    ob.volume = m_volume[i];
                     
                     // Count touches
                     for(int j = i - 1; j >= 0; j--) {
@@ -464,18 +493,44 @@ OrderBlock CDetector::FindOB(int direction) {
         }
     }
     
+    // Volume filter: Check if OB has sufficient volume (k=1.3 for strong)
+    if(ob.valid && ob.volume > 0) {
+        // Calculate average volume of past 20 bars
+        long sumVol = 0;
+        int volCount = 0;
+        int startIdx = 5; // Start from where we found OB
+        
+        for(int k = startIdx; k < ArraySize(m_volume) && k < startIdx + 20; k++) {
+            if(m_volume[k] > 0) {
+                sumVol += m_volume[k];
+                volCount++;
+            }
+        }
+        
+        if(volCount > 0) {
+            double avgVol = (double)sumVol / volCount;
+            // Mark as weak if volume < 130% average (strong OB needs 1.3x volume)
+            if(ob.volume < avgVol * 1.3) {
+                ob.weak = true;
+            }
+            // If volume >= 1.3x average, it's strong (weak stays false)
+        }
+    }
+    
     // Invalidate if too many touches
     if(ob.touches >= m_ob_MaxTouches) {
         ob.valid = false;
     }
     
-    // Check for invalidation by close beyond buffer
+    // Check for invalidation by close beyond buffer - convert to Breaker Block
     if(ob.valid) {
         double buffer = m_ob_BufferInvPts * _Point;
-        if(direction == -1 && m_close[0] > ob.priceTop + buffer) {
-            ob.valid = false;
-        } else if(direction == 1 && m_close[0] < ob.priceBottom - buffer) {
-            ob.valid = false;
+        if((direction == -1 && m_close[0] > ob.priceTop + buffer) ||
+           (direction == 1 && m_close[0] < ob.priceBottom - buffer)) {
+            // Convert to breaker block (opposite direction)
+            ob.isBreaker = true;
+            ob.direction = -direction; // Flip direction
+            // Keep valid for breaker use
         }
     }
     
@@ -493,6 +548,8 @@ FVGSignal CDetector::FindFVG(int direction) {
     fvg.state = 0;
     fvg.barsAge = 0;
     fvg.ttl = m_fvg_TTL;
+    fvg.initialSize = 0;
+    fvg.mtfConfirmed = false;
     
     if(direction == 0 || ArraySize(m_high) < 10) return fvg;
     
@@ -508,6 +565,7 @@ FVGSignal CDetector::FindFVG(int direction) {
                 fvg.priceBottom = m_high[i+2];
                 fvg.priceTop = m_low[i];
                 fvg.createdTime = iTime(m_symbol, m_timeframe, i);
+                fvg.initialSize = gapSize; // Store original gap size
                 
                 // Calculate fill percentage
                 double gapFilled = 0;
@@ -538,6 +596,7 @@ FVGSignal CDetector::FindFVG(int direction) {
                 fvg.priceBottom = m_high[i];
                 fvg.priceTop = m_low[i+2];
                 fvg.createdTime = iTime(m_symbol, m_timeframe, i);
+                fvg.initialSize = gapSize; // Store original gap size
                 
                 // Calculate fill percentage
                 double gapFilled = 0;
@@ -658,5 +717,83 @@ MomentumSignal CDetector::DetectMomentum() {
     }
     
     return momo;
+}
+
+//+------------------------------------------------------------------+
+//| Get Multi-Timeframe Bias from higher timeframe                   |
+//+------------------------------------------------------------------+
+int CDetector::GetMTFBias() {
+    // Get higher timeframe (H1 if current is M15/M30, H4 if H1)
+    ENUM_TIMEFRAMES higherTF = PERIOD_H1;
+    if(m_timeframe == PERIOD_M1 || m_timeframe == PERIOD_M5) higherTF = PERIOD_M15;
+    else if(m_timeframe == PERIOD_M15 || m_timeframe == PERIOD_M30) higherTF = PERIOD_H1;
+    else if(m_timeframe == PERIOD_H1) higherTF = PERIOD_H4;
+    else if(m_timeframe == PERIOD_H4) higherTF = PERIOD_D1;
+    else return 0; // No higher TF bias for daily+
+    
+    // Get price data from higher TF
+    double htfHigh[], htfLow[], htfClose[];
+    ArraySetAsSeries(htfHigh, true);
+    ArraySetAsSeries(htfLow, true);
+    ArraySetAsSeries(htfClose, true);
+    
+    if(CopyHigh(m_symbol, higherTF, 0, 50, htfHigh) < 50) return 0;
+    if(CopyLow(m_symbol, higherTF, 0, 50, htfLow) < 50) return 0;
+    if(CopyClose(m_symbol, higherTF, 0, 50, htfClose) < 50) return 0;
+    
+    // Check for BOS on higher timeframe - look for higher highs/higher lows (bullish) or lower highs/lower lows (bearish)
+    // Find last 2 swings
+    Swing lastHigh1, lastHigh2, lastLow1, lastLow2;
+    lastHigh1.index = -1; lastHigh2.index = -1;
+    lastLow1.index = -1; lastLow2.index = -1;
+    
+    int swingK = 2; // Use K=2 for HTF swings
+    int highsFound = 0, lowsFound = 0;
+    
+    for(int i = swingK + 1; i < 40; i++) {
+        // Check swing high
+        bool isHigh = true;
+        for(int k = 1; k <= swingK; k++) {
+            if(i - k < 0 || i + k >= ArraySize(htfHigh)) { isHigh = false; break; }
+            if(htfHigh[i] <= htfHigh[i-k] || htfHigh[i] <= htfHigh[i+k]) {
+                isHigh = false;
+                break;
+            }
+        }
+        if(isHigh) {
+            if(highsFound == 0) { lastHigh1.index = i; lastHigh1.price = htfHigh[i]; highsFound++; }
+            else if(highsFound == 1) { lastHigh2.index = i; lastHigh2.price = htfHigh[i]; highsFound++; }
+        }
+        
+        // Check swing low
+        bool isLow = true;
+        for(int k = 1; k <= swingK; k++) {
+            if(i - k < 0 || i + k >= ArraySize(htfLow)) { isLow = false; break; }
+            if(htfLow[i] >= htfLow[i-k] || htfLow[i] >= htfLow[i+k]) {
+                isLow = false;
+                break;
+            }
+        }
+        if(isLow) {
+            if(lowsFound == 0) { lastLow1.index = i; lastLow1.price = htfLow[i]; lowsFound++; }
+            else if(lowsFound == 1) { lastLow2.index = i; lastLow2.price = htfLow[i]; lowsFound++; }
+        }
+        
+        if(highsFound >= 2 && lowsFound >= 2) break;
+    }
+    
+    // Determine bias
+    int bias = 0;
+    
+    // Bullish: higher highs and higher lows
+    if(highsFound >= 2 && lowsFound >= 2) {
+        bool higherHighs = (lastHigh1.price > lastHigh2.price);
+        bool higherLows = (lastLow1.price > lastLow2.price);
+        
+        if(higherHighs && higherLows) bias = 1;  // Bullish
+        else if(!higherHighs && !higherLows) bias = -1;  // Bearish
+    }
+    
+    return bias;
 }
 

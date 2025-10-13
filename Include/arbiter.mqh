@@ -30,6 +30,11 @@ struct Candidate {
     double   poiTop;
     double   poiBottom;
     double   sweepLevel;
+    bool     obWeak;             // True if OB has low volume (< 1.3x avg)
+    bool     obStrong;           // True if OB has high volume (>= 1.3x avg)
+    bool     obIsBreaker;        // True if OB is now breaker block
+    int      mtfBias;            // Multi-timeframe bias: +1=bullish, -1=bearish, 0=neutral
+    int      sweepDistanceBars;  // Distance from sweep to current bar
     
     // Entry details
     double   entryPrice;
@@ -54,7 +59,8 @@ public:
     double ScoreCandidate(const Candidate &c);
     Candidate BuildCandidate(const BOSSignal &bos, const SweepSignal &sweep, 
                             const OrderBlock &ob, const FVGSignal &fvg, 
-                            const MomentumSignal &momo, bool sessionOpen, bool spreadOK);
+                            const MomentumSignal &momo, int mtfBias, 
+                            bool sessionOpen, bool spreadOK);
 };
 
 //+------------------------------------------------------------------+
@@ -80,43 +86,62 @@ void CArbiter::Init(double minRR, int obMaxTouches) {
 }
 
 //+------------------------------------------------------------------+
-//| Score a candidate based on priority rules                        |
+//| Score a candidate based on priority rules (ner.md spec)         |
 //+------------------------------------------------------------------+
 double CArbiter::ScoreCandidate(const Candidate &c) {
     if(!c.valid) return 0.0;
     
     double score = 0.0;
     
-    // Rule 1: BOS + Sweep + (OB|FVG) same direction = highest priority
-    if(c.hasBOS && c.hasSweep && (c.hasOB || c.hasFVG)) {
+    // Base +100: BOS && (OB||FVG)
+    if(c.hasBOS && (c.hasOB || c.hasFVG)) {
         score += 100.0;
     }
     
-    // Rule 2: FVG completed but OB valid - prioritize OB
-    if(c.hasFVG && c.fvgState == 2 && c.hasOB) {
-        score -= 20.0; // Reduce FVG weight
-    }
-    
-    // Rule 3: Momentum against SMC - discard momentum
+    // Momentum against SMC - discard
     if(c.hasMomo && c.momoAgainstSmc) {
         return 0.0; // Invalid candidate
     }
     
-    // Rule 4: OB touched >= max touches - reduce size or skip
+    // +15 if Sweep nearby (≤10 bars from current)
+    if(c.hasSweep && c.sweepDistanceBars <= 10) {
+        score += 15.0;
+    }
+    
+    // +20 if MTF align, -30 if against
+    if(c.mtfBias != 0) {
+        if(c.mtfBias == c.direction) {
+            score += 20.0;
+        } else {
+            score -= 30.0; // Heavy penalty for counter-trend
+        }
+    }
+    
+    // +10 if OB strong (volume >= 1.3x avg)
+    if(c.hasOB && c.obStrong) {
+        score += 10.0;
+    }
+    
+    // -20 if FVG Completed but OB valid (prioritize OB)
+    if(c.hasFVG && c.fvgState == 2 && c.hasOB) {
+        score -= 20.0;
+    }
+    
+    // ×0.5 if OB touches >= max
     if(c.obTouches >= m_obMaxTouches) {
-        score *= 0.5; // 50% reduction
+        score *= 0.5;
     }
     
-    // Rule 5: FVG mitigated - reduce score
-    if(c.fvgState == 1) { // Mitigated
-        score -= 10.0;
-    }
+    // Additional penalties
+    if(c.obWeak && !c.obStrong) score -= 10.0; // Weak OB
+    if(c.obIsBreaker) score -= 10.0; // Breaker lower priority
+    if(c.fvgState == 1) score -= 10.0; // Mitigated FVG
     
-    // Additional scoring factors
+    // Additional bonuses
     if(c.hasBOS) score += 30.0;
-    if(c.hasSweep) score += 25.0;
+    if(c.hasSweep) score += 25.0; // General sweep bonus
     if(c.hasOB) score += 20.0;
-    if(c.hasFVG && c.fvgState == 0) score += 15.0; // Valid FVG
+    if(c.hasFVG && c.fvgState == 0) score += 15.0;
     if(c.hasMomo && !c.momoAgainstSmc) score += 10.0;
     
     // RR bonus
@@ -131,7 +156,8 @@ double CArbiter::ScoreCandidate(const Candidate &c) {
 //+------------------------------------------------------------------+
 Candidate CArbiter::BuildCandidate(const BOSSignal &bos, const SweepSignal &sweep,
                                    const OrderBlock &ob, const FVGSignal &fvg,
-                                   const MomentumSignal &momo, bool sessionOpen, bool spreadOK) {
+                                   const MomentumSignal &momo, int mtfBias,
+                                   bool sessionOpen, bool spreadOK) {
     Candidate c;
     c.valid = false;
     c.direction = 0;
@@ -147,6 +173,11 @@ Candidate CArbiter::BuildCandidate(const BOSSignal &bos, const SweepSignal &swee
     c.poiTop = 0;
     c.poiBottom = 0;
     c.sweepLevel = 0;
+    c.obWeak = false;
+    c.obStrong = false;
+    c.obIsBreaker = false;
+    c.mtfBias = mtfBias;
+    c.sweepDistanceBars = 999;
     c.entryPrice = 0;
     c.slPrice = 0;
     c.tpPrice = 0;
@@ -174,15 +205,22 @@ Candidate CArbiter::BuildCandidate(const BOSSignal &bos, const SweepSignal &swee
            (c.direction == -1 && sweep.side == 1)) {
             c.hasSweep = true;
             c.sweepLevel = sweep.level;
+            c.sweepDistanceBars = sweep.distanceBars;
         }
     }
     
     // Check OB
-    if(ob.valid && ob.direction == c.direction) {
-        c.hasOB = true;
-        c.obTouches = ob.touches;
-        c.poiTop = ob.priceTop;
-        c.poiBottom = ob.priceBottom;
+    if(ob.valid) {
+        // Accept OB if direction matches OR if it's a breaker (flipped direction)
+        if(ob.direction == c.direction || (ob.isBreaker && ob.direction == c.direction)) {
+            c.hasOB = true;
+            c.obTouches = ob.touches;
+            c.poiTop = ob.priceTop;
+            c.poiBottom = ob.priceBottom;
+            c.obWeak = ob.weak;
+            c.obStrong = !ob.weak; // Strong if not weak (volume >= 1.3x)
+            c.obIsBreaker = ob.isBreaker;
+        }
     }
     
     // Check FVG

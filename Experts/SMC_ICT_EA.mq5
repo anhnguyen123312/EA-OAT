@@ -25,15 +25,16 @@ input int      InpPointsPerPip = 10;         // Points per pip (10 or 100 depend
 //+------------------------------------------------------------------+
 input group "═══════ Session & Market ═══════"
 input string   InpTZ              = "Asia/Ho_Chi_Minh";  // Timezone (GMT+7)
-input int      InpSessStartHour   = 6;                   // Session start hour
-input int      InpSessEndHour     = 5;                  // Session end hour
+input int      InpSessStartHour   = 7;                   // Session start hour (VN time)
+input int      InpSessEndHour     = 23;                  // Session end hour (VN time)
 input int      InpSpreadMaxPts    = 500;                 // Max spread (points)
+input double   InpSpreadATRpct    = 0.08;                // Spread ATR% guard (dynamic)
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Risk & DCA                                   |
 //+------------------------------------------------------------------+
 input group "═══════ Risk Management ═══════"
-input double   InpRiskPerTradePct = 3;     // Risk per trade (% equity)
+input double   InpRiskPerTradePct = 0.25;    // Risk per trade (% equity) - M15 default
 input double   InpMinRR           = 2.0;     // Minimum R:R ratio
 input double   InpMaxLotPerSide   = 3.0;     // Max lots per side
 input int      InpMaxDcaAddons    = 2;       // Max DCA add-ons
@@ -46,35 +47,36 @@ input group "═══════ BOS/CHOCH Detection ═══════"
 input int      InpFractalK        = 3;       // Fractal K for swings
 input int      InpLookbackSwing   = 50;      // Lookback for swing detection (bars)
 input double   InpMinBodyATR      = 0.6;     // Min body size (ATR multiple)
-input int      InpMinBreakPts     = 50;      // Min break distance (points)
-input int      InpBOS_TTL         = 40;      // BOS TTL (bars)
+input int      InpMinBreakPts     = 70;      // Min break distance (points) - M15
+input int      InpBOS_TTL         = 60;      // BOS TTL (bars) - M15 longer
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Liquidity Sweep                              |
 //+------------------------------------------------------------------+
 input group "═══════ Liquidity Sweep ═══════"
-input int      InpLookbackLiq     = 30;      // Lookback for liquidity (bars)
+input int      InpLookbackLiq     = 40;      // Lookback for liquidity (bars) - M15
 input double   InpMinWickPct      = 35.0;    // Min wick percentage
-input int      InpSweep_TTL       = 20;      // Sweep TTL (bars)
+input int      InpSweep_TTL       = 24;      // Sweep TTL (bars) - M15
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Order Block                                  |
 //+------------------------------------------------------------------+
 input group "═══════ Order Block ═══════"
 input int      InpOB_MaxTouches   = 3;       // Max touches before invalid
-input int      InpOB_BufferInvPts = 50;      // Buffer for invalidation (points)
-input int      InpOB_TTL          = 120;     // OB TTL (bars)
+input int      InpOB_BufferInvPts = 70;      // Buffer for invalidation (points) - M15
+input int      InpOB_TTL          = 160;     // OB TTL (bars) - M15
+input double   InpOB_VolMultiplier = 1.3;    // Volume multiplier for strong OB
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Fair Value Gap                               |
 //+------------------------------------------------------------------+
 input group "═══════ Fair Value Gap ═══════"
-input int      InpFVG_MinPts      = 150;     // Min FVG size (points)
+input int      InpFVG_MinPts      = 180;     // Min FVG size (points) - M15
 input double   InpFVG_FillMinPct  = 25.0;    // Min fill to track (%)
 input double   InpFVG_MitigatePct = 35.0;    // Mitigation threshold (%)
 input double   InpFVG_CompletePct = 85.0;    // Completion threshold (%)
-input int      InpFVG_BufferInvPt = 50;      // Buffer for invalidation (points)
-input int      InpFVG_TTL         = 60;      // FVG TTL (bars)
+input int      InpFVG_BufferInvPt = 70;      // Buffer for invalidation (points) - M15
+input int      InpFVG_TTL         = 70;      // FVG TTL (bars) - M15
 input int      InpK_FVG_KeepSide  = 6;       // Max FVGs to keep per side
 
 //+------------------------------------------------------------------+
@@ -89,10 +91,10 @@ input int      InpMomo_TTL        = 20;      // Momentum TTL (bars)
 //| Input Parameters - Execution                                    |
 //+------------------------------------------------------------------+
 input group "═══════ Execution ═══════"
-input int      InpTriggerBodyATR  = 40;      // Trigger body size (0.40 ATR, x100)
+input int      InpTriggerBodyATR  = 30;      // Trigger body size (0.30 ATR, x100) - M15
 input int      InpEntryBufferPts  = 70;      // Entry buffer (points)
 input int      InpMinStopPts      = 300;     // Min stop distance (points)
-input int      InpOrder_TTL_Bars  = 20;      // Pending order TTL (bars)
+input int      InpOrder_TTL_Bars  = 16;      // Pending order TTL (bars) - M15 4-8h
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Visualization                                |
@@ -120,6 +122,7 @@ Candidate      g_lastCandidate;
 
 datetime       g_lastBarTime = 0;
 int            g_totalTrades = 0;
+datetime       g_lastOrderTime = 0;  // Track last order placement time
 
 //+------------------------------------------------------------------+
 //| Macros for unit conversion                                       |
@@ -160,7 +163,7 @@ int OnInit() {
     
     g_executor = new CExecutor();
     if(!g_executor.Init(_Symbol, _Period,
-                        InpSessStartHour, InpSessEndHour, InpSpreadMaxPts,
+                        InpSessStartHour, InpSessEndHour, InpSpreadMaxPts, InpSpreadATRpct,
                         InpTriggerBodyATR, InpEntryBufferPts, InpMinStopPts, 
                         InpOrder_TTL_Bars, InpMinRR)) {
         Print("ERROR: Failed to initialize executor");
@@ -184,6 +187,7 @@ int OnInit() {
     g_lastCandidate.valid = false;
     
     g_lastBarTime = iTime(_Symbol, _Period, 0);
+    g_lastOrderTime = 0; // Initialize order time tracking
     
     Print("Initialization completed successfully");
     return INIT_SUCCEEDED;
@@ -285,9 +289,12 @@ void OnTick() {
         g_lastMomo = g_detector.DetectMomentum();
     }
     
+    // 3.5. Get MTF Bias
+    int mtfBias = g_detector.GetMTFBias();
+    
     // 4. Build candidate using arbiter
     g_lastCandidate = g_arbiter.BuildCandidate(g_lastBOS, g_lastSweep, g_lastOB, 
-                                               g_lastFVG, g_lastMomo,
+                                               g_lastFVG, g_lastMomo, mtfBias,
                                                g_executor.SessionOpen(), 
                                                g_executor.SpreadOK());
     
@@ -313,8 +320,11 @@ void OnTick() {
                     double slDistance = MathAbs(entry - sl) / _Point;
                     double lots = g_riskMgr.CalcLotsByRisk(InpRiskPerTradePct, slDistance);
                     
-                    // Check if we already have positions in this direction (use correct MT5 API)
+                    // Check if we already have positions OR pending orders in this direction
                     int existingPositions = 0;
+                    int existingPendingOrders = 0;
+                    
+                    // Check positions
                     for(int i = 0; i < PositionsTotal(); i++) {
                         ulong ticket = PositionGetTicket(i);
                         if(ticket == 0) continue;
@@ -330,8 +340,26 @@ void OnTick() {
                         }
                     }
                     
-                    // Only place if we don't already have a position in this direction
-                    if(existingPositions == 0) {
+                    // Check pending orders
+                    for(int i = 0; i < OrdersTotal(); i++) {
+                        ulong ticket = OrderGetTicket(i);
+                        if(ticket == 0) continue;
+                        
+                        string sym = OrderGetString(ORDER_SYMBOL);
+                        if(sym != _Symbol) continue;
+                        
+                        long orderType = OrderGetInteger(ORDER_TYPE);
+                        if((g_lastCandidate.direction == 1 && (orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_BUY_LIMIT)) ||
+                           (g_lastCandidate.direction == -1 && (orderType == ORDER_TYPE_SELL_STOP || orderType == ORDER_TYPE_SELL_LIMIT))) {
+                            existingPendingOrders++;
+                        }
+                    }
+                    
+                    // One-Trade-Per-Bar protection
+                    bool alreadyTradedThisBar = (g_lastOrderTime == currentBarTime);
+                    
+                    // Only place if: no existing position, no pending order, not traded this bar yet
+                    if(existingPositions == 0 && existingPendingOrders == 0 && !alreadyTradedThisBar) {
                         string comment = StringFormat("SMC_%s_RR%.1f", 
                                                      g_lastCandidate.direction == 1 ? "BUY" : "SELL",
                                                      rr);
@@ -340,6 +368,8 @@ void OnTick() {
                         if(g_executor.PlaceStopOrder(g_lastCandidate.direction, entry, sl, tp, 
                                                     lots, comment)) {
                             g_totalTrades++;
+                            g_lastOrderTime = currentBarTime; // Mark this bar as having an order
+                            
                             Print("═══════════════════════════════════════");
                             Print("TRADE #", g_totalTrades, " PLACED");
                             Print("Direction: ", g_lastCandidate.direction == 1 ? "BUY" : "SELL");
@@ -349,10 +379,23 @@ void OnTick() {
                             Print("R:R: ", DoubleToString(rr, 2));
                             Print("Lots: ", lots);
                             Print("Score: ", score);
+                            Print("Existing Positions: ", existingPositions);
+                            Print("Existing Pending: ", existingPendingOrders);
                             Print("═══════════════════════════════════════");
                             
                             // Track position for DCA/BE management
                             // Note: Will be tracked when order fills
+                        }
+                    } else {
+                        // Log why we didn't place order
+                        if(existingPositions > 0) {
+                            Print("Skipped: Already have ", existingPositions, " position(s) in this direction");
+                        }
+                        if(existingPendingOrders > 0) {
+                            Print("Skipped: Already have ", existingPendingOrders, " pending order(s) in this direction");
+                        }
+                        if(alreadyTradedThisBar) {
+                            Print("Skipped: Already placed order this bar (one-trade-per-bar)");
                         }
                     }
                 }

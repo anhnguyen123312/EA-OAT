@@ -20,6 +20,7 @@ private:
     int      m_sessStartHour;
     int      m_sessEndHour;
     int      m_spreadMaxPts;
+    double   m_spreadATRpct;      // Spread ATR% guard
     int      m_timezoneOffset;    // GMT offset for Asia/Ho_Chi_Minh
     
     // Execution parameters
@@ -45,7 +46,7 @@ public:
     ~CExecutor();
     
     bool Init(string symbol, ENUM_TIMEFRAMES tf,
-              int sessStart, int sessEnd, int spreadMax,
+              int sessStart, int sessEnd, int spreadMax, double spreadATRpct,
               int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR);
     
     bool SessionOpen();
@@ -86,13 +87,14 @@ CExecutor::~CExecutor() {
 //| Initialize executor parameters                                   |
 //+------------------------------------------------------------------+
 bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
-                     int sessStart, int sessEnd, int spreadMax,
+                     int sessStart, int sessEnd, int spreadMax, double spreadATRpct,
                      int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR) {
     m_symbol = symbol;
     m_timeframe = tf;
     m_sessStartHour = sessStart;
     m_sessEndHour = sessEnd;
     m_spreadMaxPts = spreadMax;
+    m_spreadATRpct = spreadATRpct;
     m_triggerBodyATR = triggerBody;
     m_entryBufferPts = entryBuffer;
     m_minStopPts = minStop;
@@ -133,9 +135,9 @@ bool CExecutor::SpreadOK() {
     long spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD);
     double atr = GetATR();
     
-    // Dynamic spread filter: accept up to max(fixed threshold, 8% of ATR)
+    // Dynamic spread filter: accept up to max(fixed threshold, ATR% guard)
     if(atr > 0) {
-        long dynamicMax = (long)MathMax(m_spreadMaxPts, 0.08 * atr / _Point);
+        long dynamicMax = (long)MathMax(m_spreadMaxPts, m_spreadATRpct * atr / _Point);
         return (spread <= dynamicMax);
     }
     
@@ -178,7 +180,7 @@ bool CExecutor::GetTriggerCandle(int direction, double &triggerHigh, double &tri
     double atr = GetATR();
     if(atr <= 0) return false;
     
-    // Lower threshold: 25% of ATR or minimum 30 points (3 pips)
+    // Spec ner.md: body >= max( (TriggerBodyATR/100)×ATR, 30 pts )
     double minBodySize = MathMax((m_triggerBodyATR / 100.0) * atr, 30.0 * _Point);
     
     // Scan bars 0-3 for trigger candle
