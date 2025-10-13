@@ -15,7 +15,8 @@ private:
     
     // Risk parameters
     double   m_riskPerTradePct;   // % of equity per trade
-    double   m_maxLotPerSide;
+    double   m_maxLotBase;        // Base max lot (1.0)
+    double   m_maxLotPerSide;     // Dynamic calculated
     int      m_maxDcaAddons;
     double   m_dailyMddMax;       // Max daily drawdown %
     
@@ -28,10 +29,20 @@ private:
     // BE and Trail parameters
     double   m_beLevel_R;         // +1R for breakeven
     
-    // Daily tracking
+    // Daily tracking (GMT+7)
     double   m_startDayBalance;
+    double   m_initialBalance;    // Balance at 6h GMT+7
     datetime m_lastDayCheck;
+    int      m_dailyResetHour;    // 6h GMT+7
     bool     m_tradingHalted;
+    
+    // Basket Manager
+    bool     m_enableBasketTP;
+    bool     m_enableBasketSL;
+    double   m_basketTPPct;       // 0.3% balance
+    double   m_basketSLPct;       // 1.2% balance
+    int      m_endOfDayHour;      // Hour to close all (GMT+7)
+    bool     m_enableEODClose;
     
     // DCA tracking per position
     struct PositionDCA {
@@ -51,24 +62,38 @@ public:
     CRiskManager();
     ~CRiskManager();
     
-    void Init(string symbol, double riskPct, double maxLot, int maxDCA, double dailyMDD);
+    void Init(string symbol, double riskPct, double maxLotBase, int maxDCA, double dailyMDD,
+              double basketTPPct, double basketSLPct, int endOfDayHour, int dailyResetHour);
     
     double CalcLotsByRisk(double riskPct, double slPoints);
+    double GetMaxLotPerSide() { return m_maxLotPerSide; }
+    double GetInitialBalance() { return m_initialBalance; }
+    double GetDailyPL();
+    
     bool   CheckDailyMDD();
     void   ResetDailyTracking();
     bool   IsTradingHalted() { return m_tradingHalted; }
     
     void   TrackPosition(ulong ticket, double entry, double sl, double tp, double lots);
     void   ManageOpenPositions();
+    void   CheckBasketTPSL();
+    void   CheckEndOfDay();
+    
+    // Dashboard info getters
+    double GetBasketFloatingPL();
+    double GetBasketFloatingPLPct();
+    int    GetTotalPositions();
     
 private:
+    void   UpdateMaxLotPerSide();
     double GetCurrentEquity();
-    double GetDailyPL();
     int    CountSidePositions(int direction);
     double GetSideLots(int direction);
     double CalcProfitInR(ulong ticket);
     bool   MoveSLToBE(ulong ticket);
     bool   AddDCAPosition(int direction, double lots, double currentPrice);
+    void   CloseAllPositions(string reason);
+    int    GetLocalHour();
 };
 
 //+------------------------------------------------------------------+
@@ -76,7 +101,8 @@ private:
 //+------------------------------------------------------------------+
 CRiskManager::CRiskManager() {
     m_riskPerTradePct = 0.3;
-    m_maxLotPerSide = 3.0;
+    m_maxLotBase = 1.0;
+    m_maxLotPerSide = 1.0;
     m_maxDcaAddons = 2;
     m_dailyMddMax = 8.0;
     
@@ -87,9 +113,18 @@ CRiskManager::CRiskManager() {
     
     m_beLevel_R = 1.0;
     
+    m_dailyResetHour = 6;  // 6h GMT+7
     m_tradingHalted = false;
     m_lastDayCheck = 0;
     m_startDayBalance = 0;
+    m_initialBalance = 0;
+    
+    m_enableBasketTP = true;
+    m_enableBasketSL = true;
+    m_basketTPPct = 0.3;
+    m_basketSLPct = 1.2;
+    m_endOfDayHour = 23;
+    m_enableEODClose = false;
     
     ArrayResize(m_positions, 0);
 }
@@ -103,12 +138,21 @@ CRiskManager::~CRiskManager() {
 //+------------------------------------------------------------------+
 //| Initialize risk manager                                          |
 //+------------------------------------------------------------------+
-void CRiskManager::Init(string symbol, double riskPct, double maxLot, int maxDCA, double dailyMDD) {
+void CRiskManager::Init(string symbol, double riskPct, double maxLotBase, int maxDCA, double dailyMDD,
+                        double basketTPPct, double basketSLPct, int endOfDayHour, int dailyResetHour) {
     m_symbol = symbol;
     m_riskPerTradePct = riskPct;
-    m_maxLotPerSide = maxLot;
+    m_maxLotBase = maxLotBase;
     m_maxDcaAddons = maxDCA;
     m_dailyMddMax = dailyMDD;
+    
+    m_basketTPPct = basketTPPct;
+    m_basketSLPct = basketSLPct;
+    m_endOfDayHour = endOfDayHour;
+    m_dailyResetHour = dailyResetHour;
+    m_enableBasketTP = (basketTPPct > 0);
+    m_enableBasketSL = (basketSLPct > 0);
+    m_enableEODClose = (endOfDayHour > 0);
     
     ResetDailyTracking();
 }
@@ -156,19 +200,66 @@ double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
 }
 
 //+------------------------------------------------------------------+
-//| Reset daily tracking                                             |
+//| Get local hour in GMT+7 timezone                                 |
+//+------------------------------------------------------------------+
+int CRiskManager::GetLocalHour() {
+    datetime t = TimeCurrent();
+    MqlDateTime s;
+    TimeToStruct(t, s);
+    
+    // Calculate proper timezone offset: VN_GMT - Server_GMT
+    int server_gmt = (int)(TimeGMTOffset() / 3600);
+    int vn_gmt = 7;
+    int delta = vn_gmt - server_gmt;
+    int hour_localvn = (s.hour + delta + 24) % 24;
+    
+    return hour_localvn;
+}
+
+//+------------------------------------------------------------------+
+//| Reset daily tracking at 6h GMT+7                                |
 //+------------------------------------------------------------------+
 void CRiskManager::ResetDailyTracking() {
+    int currentHour = GetLocalHour();
+    
     MqlDateTime dt;
     TimeToStruct(TimeCurrent(), dt);
-    
     datetime currentDay = StringToTime(StringFormat("%04d.%02d.%02d", dt.year, dt.mon, dt.day));
     
+    // Check if new day AND past reset hour
     if(m_lastDayCheck != currentDay) {
-        m_startDayBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-        m_lastDayCheck = currentDay;
-        m_tradingHalted = false;
-        Print("Daily tracking reset. Start balance: ", m_startDayBalance);
+        if(currentHour >= m_dailyResetHour) {
+            m_startDayBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+            m_initialBalance = m_startDayBalance;
+            m_lastDayCheck = currentDay;
+            m_tradingHalted = false;
+            
+            // Update dynamic max lot
+            UpdateMaxLotPerSide();
+            
+            Print("═══════════════════════════════════════");
+            Print("DAILY RESET at ", m_dailyResetHour, "h GMT+7");
+            Print("Initial Balance: $", m_initialBalance);
+            Print("Max Lot Per Side: ", m_maxLotPerSide);
+            Print("═══════════════════════════════════════");
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Update dynamic MaxLotPerSide based on balance growth            |
+//+------------------------------------------------------------------+
+void CRiskManager::UpdateMaxLotPerSide() {
+    double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double balanceGrowth = currentBalance - m_initialBalance;
+    
+    // Formula: MaxLot = Base + floor(BalanceGrowth / 1000) * 0.1
+    int increments = (int)MathFloor(balanceGrowth / 1000.0);
+    m_maxLotPerSide = m_maxLotBase + (increments * 0.1);
+    
+    // Ensure minimum
+    if(m_maxLotPerSide < m_maxLotBase) {
+        m_maxLotPerSide = m_maxLotBase;
     }
 }
 
@@ -388,10 +479,135 @@ bool CRiskManager::AddDCAPosition(int direction, double lots, double currentPric
 }
 
 //+------------------------------------------------------------------+
+//| Get basket floating P/L in dollars                               |
+//+------------------------------------------------------------------+
+double CRiskManager::GetBasketFloatingPL() {
+    double totalPL = 0;
+    for(int i = 0; i < PositionsTotal(); i++) {
+        if(PositionGetSymbol(i) == m_symbol) {
+            totalPL += PositionGetDouble(POSITION_PROFIT);
+        }
+    }
+    return totalPL;
+}
+
+//+------------------------------------------------------------------+
+//| Get basket floating P/L in % of balance                         |
+//+------------------------------------------------------------------+
+double CRiskManager::GetBasketFloatingPLPct() {
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    if(balance <= 0) return 0;
+    
+    double pl = GetBasketFloatingPL();
+    return (pl / balance) * 100.0;
+}
+
+//+------------------------------------------------------------------+
+//| Get total positions count                                        |
+//+------------------------------------------------------------------+
+int CRiskManager::GetTotalPositions() {
+    int count = 0;
+    for(int i = 0; i < PositionsTotal(); i++) {
+        if(PositionGetSymbol(i) == m_symbol) {
+            count++;
+        }
+    }
+    return count;
+}
+
+//+------------------------------------------------------------------+
+//| Close all positions with reason                                  |
+//+------------------------------------------------------------------+
+void CRiskManager::CloseAllPositions(string reason) {
+    Print("═══════════════════════════════════════");
+    Print("CLOSING ALL POSITIONS: ", reason);
+    Print("═══════════════════════════════════════");
+    
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong ticket = PositionGetTicket(i);
+        if(PositionSelectByTicket(ticket)) {
+            if(PositionGetString(POSITION_SYMBOL) == m_symbol) {
+                MqlTradeRequest request;
+                MqlTradeResult result;
+                ZeroMemory(request);
+                ZeroMemory(result);
+                
+                request.action = TRADE_ACTION_DEAL;
+                request.position = ticket;
+                request.symbol = m_symbol;
+                request.volume = PositionGetDouble(POSITION_VOLUME);
+                request.deviation = 20;
+                
+                if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+                    request.type = ORDER_TYPE_SELL;
+                    request.price = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+                } else {
+                    request.type = ORDER_TYPE_BUY;
+                    request.price = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+                }
+                
+                if(!OrderSend(request, result)) {
+                    Print("Failed to close position ", ticket, ": ", result.retcode);
+                } else {
+                    Print("Closed position ", ticket, " - Reason: ", reason);
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check basket TP/SL based on %Balance                            |
+//+------------------------------------------------------------------+
+void CRiskManager::CheckBasketTPSL() {
+    double plPct = GetBasketFloatingPLPct();
+    
+    // Check Basket TP
+    if(m_enableBasketTP && plPct >= m_basketTPPct) {
+        Print("Basket TP Hit: ", plPct, "% (Target: ", m_basketTPPct, "%)");
+        CloseAllPositions(StringFormat("Basket TP %.2f%%", plPct));
+        return;
+    }
+    
+    // Check Basket SL
+    if(m_enableBasketSL && plPct <= -m_basketSLPct) {
+        Print("Basket SL Hit: ", plPct, "% (Limit: -", m_basketSLPct, "%)");
+        CloseAllPositions(StringFormat("Basket SL %.2f%%", plPct));
+        return;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check and close all positions at end of day                     |
+//+------------------------------------------------------------------+
+void CRiskManager::CheckEndOfDay() {
+    if(!m_enableEODClose) return;
+    
+    int currentHour = GetLocalHour();
+    
+    if(currentHour >= m_endOfDayHour) {
+        int positions = GetTotalPositions();
+        if(positions > 0) {
+            CloseAllPositions(StringFormat("End of Day - %dh GMT+7", m_endOfDayHour));
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
 //| Manage open positions - BE, Trail, DCA                           |
 //+------------------------------------------------------------------+
 void CRiskManager::ManageOpenPositions() {
-    // Check daily MDD first
+    // Check daily tracking and update dynamic lot
+    ResetDailyTracking();
+    UpdateMaxLotPerSide();
+    
+    // Check basket TP/SL
+    CheckBasketTPSL();
+    
+    // Check end of day
+    CheckEndOfDay();
+    
+    // Check daily MDD
     if(!CheckDailyMDD()) return;
     
     // Update position tracking

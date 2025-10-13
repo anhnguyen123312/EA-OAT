@@ -17,13 +17,13 @@
 //+------------------------------------------------------------------+
 //| Input Parameters - Unit Convention                              |
 //+------------------------------------------------------------------+
-input group "═══════ Unit Convention ═══════"
+input group "======= Unit Convention ======="
 input int      InpPointsPerPip = 10;         // Points per pip (10 or 100 depending on broker)
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Session & Market                             |
 //+------------------------------------------------------------------+
-input group "═══════ Session & Market ═══════"
+input group "======= Session & Market ======="
 input string   InpTZ              = "Asia/Ho_Chi_Minh";  // Timezone (GMT+7)
 input int      InpSessStartHour   = 7;                   // Session start hour (VN time)
 input int      InpSessEndHour     = 23;                  // Session end hour (VN time)
@@ -33,17 +33,26 @@ input double   InpSpreadATRpct    = 0.08;                // Spread ATR% guard (d
 //+------------------------------------------------------------------+
 //| Input Parameters - Risk & DCA                                   |
 //+------------------------------------------------------------------+
-input group "═══════ Risk Management ═══════"
+input group "======= Risk Management ======="
 input double   InpRiskPerTradePct = 0.25;    // Risk per trade (% equity) - M15 default
 input double   InpMinRR           = 2.0;     // Minimum R:R ratio
-input double   InpMaxLotPerSide   = 3.0;     // Max lots per side
+input double   InpMaxLotBase      = 1.0;     // Base max lot (grows with balance)
 input int      InpMaxDcaAddons    = 2;       // Max DCA add-ons
 input double   InpDailyMddMax     = 8.0;     // Daily MDD limit (%)
 
 //+------------------------------------------------------------------+
+//| Input Parameters - Basket Manager                               |
+//+------------------------------------------------------------------+
+input group "======= Basket Manager ======="
+input double   InpBasketTPPct     = 0.3;     // Basket TP (% balance)
+input double   InpBasketSLPct     = 1.2;     // Basket SL (% balance)
+input int      InpEndOfDayHour    = 23;      // End of day hour (GMT+7, 0=disabled)
+input int      InpDailyResetHour  = 6;       // Daily reset hour (GMT+7)
+
+//+------------------------------------------------------------------+
 //| Input Parameters - BOS Detection                                |
 //+------------------------------------------------------------------+
-input group "═══════ BOS/CHOCH Detection ═══════"
+input group "======= BOS/CHOCH Detection ======="
 input int      InpFractalK        = 3;       // Fractal K for swings
 input int      InpLookbackSwing   = 50;      // Lookback for swing detection (bars)
 input double   InpMinBodyATR      = 0.6;     // Min body size (ATR multiple)
@@ -53,7 +62,7 @@ input int      InpBOS_TTL         = 60;      // BOS TTL (bars) - M15 longer
 //+------------------------------------------------------------------+
 //| Input Parameters - Liquidity Sweep                              |
 //+------------------------------------------------------------------+
-input group "═══════ Liquidity Sweep ═══════"
+input group "======= Liquidity Sweep ======="
 input int      InpLookbackLiq     = 40;      // Lookback for liquidity (bars) - M15
 input double   InpMinWickPct      = 35.0;    // Min wick percentage
 input int      InpSweep_TTL       = 24;      // Sweep TTL (bars) - M15
@@ -61,7 +70,7 @@ input int      InpSweep_TTL       = 24;      // Sweep TTL (bars) - M15
 //+------------------------------------------------------------------+
 //| Input Parameters - Order Block                                  |
 //+------------------------------------------------------------------+
-input group "═══════ Order Block ═══════"
+input group "======= Order Block ======="
 input int      InpOB_MaxTouches   = 3;       // Max touches before invalid
 input int      InpOB_BufferInvPts = 70;      // Buffer for invalidation (points) - M15
 input int      InpOB_TTL          = 160;     // OB TTL (bars) - M15
@@ -70,7 +79,7 @@ input double   InpOB_VolMultiplier = 1.3;    // Volume multiplier for strong OB
 //+------------------------------------------------------------------+
 //| Input Parameters - Fair Value Gap                               |
 //+------------------------------------------------------------------+
-input group "═══════ Fair Value Gap ═══════"
+input group "======= Fair Value Gap ======="
 input int      InpFVG_MinPts      = 180;     // Min FVG size (points) - M15
 input double   InpFVG_FillMinPct  = 25.0;    // Min fill to track (%)
 input double   InpFVG_MitigatePct = 35.0;    // Mitigation threshold (%)
@@ -82,7 +91,7 @@ input int      InpK_FVG_KeepSide  = 6;       // Max FVGs to keep per side
 //+------------------------------------------------------------------+
 //| Input Parameters - Momentum (Optional)                          |
 //+------------------------------------------------------------------+
-input group "═══════ Momentum Breakout ═══════"
+input group "======= Momentum Breakout ======="
 input double   InpMomo_MinDispATR = 0.7;     // Min displacement (ATR multiple)
 input int      InpMomo_FailBars   = 4;       // Bars to confirm or fail
 input int      InpMomo_TTL        = 20;      // Momentum TTL (bars)
@@ -90,7 +99,7 @@ input int      InpMomo_TTL        = 20;      // Momentum TTL (bars)
 //+------------------------------------------------------------------+
 //| Input Parameters - Execution                                    |
 //+------------------------------------------------------------------+
-input group "═══════ Execution ═══════"
+input group "======= Execution ======="
 input int      InpTriggerBodyATR  = 30;      // Trigger body size (0.30 ATR, x100) - M15
 input int      InpEntryBufferPts  = 70;      // Entry buffer (points)
 input int      InpMinStopPts      = 300;     // Min stop distance (points)
@@ -99,7 +108,7 @@ input int      InpOrder_TTL_Bars  = 16;      // Pending order TTL (bars) - M15 4
 //+------------------------------------------------------------------+
 //| Input Parameters - Visualization                                |
 //+------------------------------------------------------------------+
-input group "═══════ Visualization ═══════"
+input group "======= Visualization ======="
 input bool     InpShowDebugDraw   = true;    // Show debug drawings
 input bool     InpShowDashboard   = true;    // Show dashboard
 
@@ -171,7 +180,8 @@ int OnInit() {
     }
     
     g_riskMgr = new CRiskManager();
-    g_riskMgr.Init(_Symbol, InpRiskPerTradePct, InpMaxLotPerSide, InpMaxDcaAddons, InpDailyMddMax);
+    g_riskMgr.Init(_Symbol, InpRiskPerTradePct, InpMaxLotBase, InpMaxDcaAddons, InpDailyMddMax,
+                   InpBasketTPPct, InpBasketSLPct, InpEndOfDayHour, InpDailyResetHour);
     
     if(InpShowDebugDraw || InpShowDashboard) {
         g_drawer = new CDrawDebug();
@@ -410,18 +420,27 @@ void OnTick() {
     g_executor.ManagePendingOrders();
     
     // 12. Update dashboard
-    if(InpShowDashboard && g_drawer != NULL && newBar) {
+    if(InpShowDashboard && g_drawer != NULL) {
         string status = "SCANNING";
-        if(g_lastCandidate.valid && g_lastCandidate.score >= 100.0) {
-            status = "SIGNAL DETECTED - Score: " + DoubleToString(g_lastCandidate.score, 1);
+        if(g_riskMgr.IsTradingHalted()) {
+            status = "TRADING HALTED - Daily MDD";
+        } else if(g_lastCandidate.valid && g_lastCandidate.score >= 100.0) {
+            status = "SIGNAL DETECTED";
         } else if(g_lastBOS.valid) {
-            status = "BOS DETECTED - Waiting for setup";
+            status = "BOS DETECTED - Waiting";
+        } else if(!g_executor.SessionOpen()) {
+            status = "OUTSIDE SESSION";
+        } else if(!g_executor.SpreadOK()) {
+            status = "SPREAD TOO WIDE";
         }
         
-        g_drawer.UpdateDashboard(status);
+        double score = g_lastCandidate.valid ? g_lastCandidate.score : 0;
+        
+        g_drawer.UpdateDashboard(status, g_riskMgr, g_executor, g_detector,
+                                g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, score);
         
         // Cleanup old objects periodically
-        if(g_totalTrades % 10 == 0) {
+        if(newBar && g_totalTrades % 10 == 0) {
             g_drawer.CleanupOldObjects();
         }
     }

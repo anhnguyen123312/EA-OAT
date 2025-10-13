@@ -6,6 +6,11 @@
 #property version   "1.00"
 #property strict
 
+// Forward declarations
+class CRiskManager;
+class CExecutor;
+class CDetector;
+
 //+------------------------------------------------------------------+
 //| Drawing Class - Chart visualization for debugging               |
 //+------------------------------------------------------------------+
@@ -26,7 +31,9 @@ public:
     void MarkBOS(int barIndex, int direction, double level, string tag);
     void MarkSweep(double level, int side, datetime time, string tag);
     void DrawLabel(string text, int x, int y, color clr, string tag);
-    void UpdateDashboard(string stateText);
+    void UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecutor *executor, 
+                         CDetector *detector, BOSSignal &lastBOS, SweepSignal &lastSweep, 
+                         OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore);
     
 private:
     string GenerateObjectName(string type);
@@ -246,47 +253,174 @@ void CDrawDebug::DrawLabel(string text, int x, int y, color clr, string tag) {
 }
 
 //+------------------------------------------------------------------+
-//| Update dashboard with current state                              |
+//| Update dashboard with current state - FULL INFO                 |
 //+------------------------------------------------------------------+
-void CDrawDebug::UpdateDashboard(string stateText) {
-    string objName = m_prefix + "Dashboard";
+void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecutor *executor, 
+                                 CDetector *detector, BOSSignal &lastBOS, SweepSignal &lastSweep, 
+                                 OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore) {
+    // Create white background panel
+    string bgName = m_prefix + "Dashboard_BG";
+    ObjectDelete(0, bgName);
     
-    // Delete if exists
-    ObjectDelete(0, objName);
+    if(ObjectCreate(0, bgName, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
+        ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, 5);
+        ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, 15);
+        ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 420);
+        ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 550);
+        ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, clrWhite);
+        ObjectSetInteger(0, bgName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+        ObjectSetInteger(0, bgName, OBJPROP_COLOR, clrBlack);
+        ObjectSetInteger(0, bgName, OBJPROP_WIDTH, 1);
+        ObjectSetInteger(0, bgName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, bgName, OBJPROP_BACK, true);
+        ObjectSetInteger(0, bgName, OBJPROP_SELECTABLE, false);
+    }
     
     // Build dashboard text
-    string dashboard = "╔════════════════════════════════════╗\n";
-    dashboard += "║  SMC/ICT EA - Status Monitor      ║\n";
-    dashboard += "╠════════════════════════════════════╣\n";
-    dashboard += "║ " + stateText + "\n";
-    dashboard += "╠════════════════════════════════════╣\n";
+    string dashboard = "┌─────────────────────────────────────────────┐\n";
+    dashboard += "│ OAT V4 - ICT/SMC + Momentum EA              │\n";
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    dashboard += "│ STATE: " + stateText;
+    // Pad to align
+    int padLen = 40 - StringLen(stateText);
+    for(int i = 0; i < padLen; i++) dashboard += " ";
+    dashboard += "│\n";
     
-    // Add account info
+    // Account Info
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-    double profit = equity - balance;
-    double profitPct = (balance > 0) ? (profit / balance) * 100.0 : 0;
+    double initBalance = (riskMgr != NULL) ? riskMgr.GetInitialBalance() : balance;
+    double maxLot = (riskMgr != NULL) ? riskMgr.GetMaxLotPerSide() : 0;
     
-    dashboard += StringFormat("║ Balance: $%.2f              ║\n", balance);
-    dashboard += StringFormat("║ Equity:  $%.2f              ║\n", equity);
-    dashboard += StringFormat("║ P/L:     $%.2f (%.2f%%)      ║\n", profit, profitPct);
-    dashboard += "╠════════════════════════════════════╣\n";
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    dashboard += StringFormat("│ Balance:    $%10.2f | MaxLot: %.2f   │\n", balance, maxLot);
+    dashboard += StringFormat("│ Init Bal:   $%10.2f (Today 6h)       │\n", initBalance);
+    dashboard += StringFormat("│ Equity:     $%10.2f                  │\n", equity);
     
-    // Add position info
-    int positions = PositionsTotal();
-    dashboard += StringFormat("║ Open Positions: %d             ║\n", positions);
+    // Floating P/L
+    double floatingPL = (riskMgr != NULL) ? riskMgr.GetBasketFloatingPL() : 0;
+    double floatingPct = (riskMgr != NULL) ? riskMgr.GetBasketFloatingPLPct() : 0;
+    color plColor = (floatingPL >= 0) ? clrGreen : clrRed;
     
-    dashboard += "╚════════════════════════════════════╝";
+    dashboard += StringFormat("│ Floating PL: $%9.2f (%+.2f%%)         │\n", floatingPL, floatingPct);
+    
+    // Daily P/L
+    double dailyPL = (riskMgr != NULL) ? riskMgr.GetDailyPL() : 0;
+    dashboard += StringFormat("│ Daily P/L:         %+.2f%%               │\n", dailyPL);
+    
+    // Session & Time
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    
+    MqlDateTime dt;
+    TimeToStruct(TimeCurrent(), dt);
+    bool sessionOpen = (executor != NULL) ? executor.SessionOpen() : false;
+    bool spreadOK = (executor != NULL) ? executor.SpreadOK() : false;
+    
+    dashboard += StringFormat("│ Time (GMT+7): %02d:%02d | Session: %s      │\n", 
+                              dt.hour, dt.min, (sessionOpen ? "OPEN " : "CLOSED"));
+    dashboard += StringFormat("│ Spread: %s                              │\n", 
+                              (spreadOK ? "OK    " : "WIDE  "));
+    
+    // Trading Status
+    bool halted = (riskMgr != NULL) ? riskMgr.IsTradingHalted() : false;
+    dashboard += StringFormat("│ Trading: %s                             │\n", 
+                              (halted ? "HALTED " : "ACTIVE "));
+    
+    // Active Structures
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    dashboard += "│ ACTIVE STRUCTURES:                          │\n";
+    
+    if(lastBOS.valid) {
+        dashboard += StringFormat("│ ├─ BOS %s @ %.2f                      │\n", 
+                                  (lastBOS.direction == 1 ? "UP  " : "DOWN"),
+                                  lastBOS.breakLevel);
+    } else {
+        dashboard += "│ ├─ BOS: None                                │\n";
+    }
+    
+    if(lastSweep.detected) {
+        dashboard += StringFormat("│ ├─ SWEEP %s @ %.2f                   │\n", 
+                                  (lastSweep.side == 1 ? "HIGH" : "LOW "),
+                                  lastSweep.level);
+    } else {
+        dashboard += "│ ├─ SWEEP: None                              │\n";
+    }
+    
+    if(lastOB.valid) {
+        dashboard += StringFormat("│ ├─ OB %s: %.2f-%.2f               │\n", 
+                                  (lastOB.direction == 1 ? "LONG " : "SHORT"),
+                                  lastOB.priceBottom, lastOB.priceTop);
+    } else {
+        dashboard += "│ ├─ OB: None                                 │\n";
+    }
+    
+    if(lastFVG.valid) {
+        string fvgState = (lastFVG.state == 0) ? "ACT" : (lastFVG.state == 1) ? "MIG" : "COM";
+        dashboard += StringFormat("│ └─ FVG %s: %.2f-%.2f [%s]         │\n", 
+                                  (lastFVG.direction == 1 ? "LONG " : "SHORT"),
+                                  lastFVG.priceBottom, lastFVG.priceTop, fvgState);
+    } else {
+        dashboard += "│ └─ FVG: None                                │\n";
+    }
+    
+    // Signal Score
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    if(lastScore >= 100.0) {
+        dashboard += StringFormat("│ SIGNAL: VALID | Score: %.1f ★         │\n", lastScore);
+    } else if(lastScore > 0) {
+        dashboard += StringFormat("│ SIGNAL: LOW   | Score: %.1f            │\n", lastScore);
+    } else {
+        dashboard += "│ SIGNAL: NONE                                │\n";
+    }
+    
+    // Positions
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    dashboard += "│ POSITIONS:                                  │\n";
+    
+    int totalPos = PositionsTotal();
+    int longPos = 0, shortPos = 0;
+    double longLots = 0, shortLots = 0;
+    
+    for(int i = 0; i < totalPos; i++) {
+        if(PositionGetSymbol(i) == _Symbol) {
+            int type = (int)PositionGetInteger(POSITION_TYPE);
+            double lots = PositionGetDouble(POSITION_VOLUME);
+            if(type == POSITION_TYPE_BUY) {
+                longPos++;
+                longLots += lots;
+            } else {
+                shortPos++;
+                shortLots += lots;
+            }
+        }
+    }
+    
+    dashboard += StringFormat("│ ├─ LONG:  %d orders | %.2f lots            │\n", longPos, longLots);
+    dashboard += StringFormat("│ └─ SHORT: %d orders | %.2f lots            │\n", shortPos, shortLots);
+    
+    // Risk Limits
+    dashboard += "├─────────────────────────────────────────────┤\n";
+    dashboard += "│ BASKET LIMITS:                              │\n";
+    dashboard += StringFormat("│ ├─ TP: +%.2f%% | Current: %+.2f%%         │\n", 0.3, floatingPct);
+    dashboard += StringFormat("│ ├─ SL: -%.2f%% | Daily: %.2f%%           │\n", 1.2, dailyPL);
+    dashboard += StringFormat("│ └─ Daily Limit: -%.1f%% | Today: %.2f%%   │\n", 8.0, dailyPL);
+    
+    dashboard += "└─────────────────────────────────────────────┘";
+    
+    // Draw dashboard text
+    string objName = m_prefix + "Dashboard";
+    ObjectDelete(0, objName);
     
     if(ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0)) {
-        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 10);
-        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 20);
+        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 15);
+        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 25);
         ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
         ObjectSetString(0, objName, OBJPROP_TEXT, dashboard);
-        ObjectSetInteger(0, objName, OBJPROP_COLOR, clrWhite);
+        ObjectSetInteger(0, objName, OBJPROP_COLOR, clrBlack);  // Black text on white background
         ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 8);
         ObjectSetString(0, objName, OBJPROP_FONT, "Courier New");
         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+        ObjectSetInteger(0, objName, OBJPROP_BACK, false);  // Foreground
     }
 }
 
