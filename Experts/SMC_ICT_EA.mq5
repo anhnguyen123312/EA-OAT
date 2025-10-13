@@ -44,9 +44,9 @@ input double   InpDailyMddMax     = 8.0;     // Daily MDD limit (%)
 //| Input Parameters - Basket Manager                               |
 //+------------------------------------------------------------------+
 input group "======= Basket Manager ======="
-input double   InpBasketTPPct     = 0.3;     // Basket TP (% balance)
-input double   InpBasketSLPct     = 1.2;     // Basket SL (% balance)
-input int      InpEndOfDayHour    = 23;      // End of day hour (GMT+7, 0=disabled)
+input double   InpBasketTPPct     = 0.0;     // Basket TP (% balance, 0=disabled)
+input double   InpBasketSLPct     = 0.0;     // Basket SL (% balance, 0=disabled)
+input int      InpEndOfDayHour    = 0;       // End of day hour (GMT+7, 0=disabled)
 input int      InpDailyResetHour  = 6;       // Daily reset hour (GMT+7)
 
 //+------------------------------------------------------------------+
@@ -132,6 +132,7 @@ Candidate      g_lastCandidate;
 datetime       g_lastBarTime = 0;
 int            g_totalTrades = 0;
 datetime       g_lastOrderTime = 0;  // Track last order placement time
+datetime       g_lastSkipLogTime = 0;  // Prevent skip log spam
 
 //+------------------------------------------------------------------+
 //| Macros for unit conversion                                       |
@@ -198,6 +199,7 @@ int OnInit() {
     
     g_lastBarTime = iTime(_Symbol, _Period, 0);
     g_lastOrderTime = 0; // Initialize order time tracking
+    g_lastSkipLogTime = 0; // Initialize skip log tracking
     
     Print("Initialization completed successfully");
     return INIT_SUCCEEDED;
@@ -240,7 +242,8 @@ void OnTick() {
     
     if(!g_executor.SpreadOK()) {
         if(InpShowDashboard && g_drawer != NULL) {
-            g_drawer.UpdateDashboard("Spread too wide - waiting...");
+            g_drawer.UpdateDashboard("SPREAD TOO WIDE", g_riskMgr, g_executor, g_detector,
+                                    g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, 0);
         }
         g_riskMgr.ManageOpenPositions();
         g_executor.ManagePendingOrders();
@@ -249,7 +252,8 @@ void OnTick() {
     
     if(g_riskMgr.IsTradingHalted()) {
         if(InpShowDashboard && g_drawer != NULL) {
-            g_drawer.UpdateDashboard("TRADING HALTED - Daily MDD exceeded");
+            g_drawer.UpdateDashboard("TRADING HALTED - MDD", g_riskMgr, g_executor, g_detector,
+                                    g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, 0);
         }
         return;
     }
@@ -330,6 +334,13 @@ void OnTick() {
                     double slDistance = MathAbs(entry - sl) / _Point;
                     double lots = g_riskMgr.CalcLotsByRisk(InpRiskPerTradePct, slDistance);
                     
+                    // 8.5. Check if lot would exceed MaxLotPerSide
+                    double maxLotAllowed = g_riskMgr.GetMaxLotPerSide();
+                    if(lots > maxLotAllowed) {
+                        lots = maxLotAllowed;
+                        Print("⚠ Lot size capped to MaxLotPerSide: ", maxLotAllowed);
+                    }
+                    
                     // Check if we already have positions OR pending orders in this direction
                     int existingPositions = 0;
                     int existingPendingOrders = 0;
@@ -397,15 +408,21 @@ void OnTick() {
                             // Note: Will be tracked when order fills
                         }
                     } else {
-                        // Log why we didn't place order
-                        if(existingPositions > 0) {
-                            Print("Skipped: Already have ", existingPositions, " position(s) in this direction");
-                        }
-                        if(existingPendingOrders > 0) {
-                            Print("Skipped: Already have ", existingPendingOrders, " pending order(s) in this direction");
-                        }
-                        if(alreadyTradedThisBar) {
-                            Print("Skipped: Already placed order this bar (one-trade-per-bar)");
+                        // Log why we didn't place order (but only once per bar to avoid spam)
+                        if(g_lastSkipLogTime != currentBarTime) {
+                            g_lastSkipLogTime = currentBarTime;
+                            
+                            if(existingPositions > 0) {
+                                Print("⊘ Entry skipped: Already have ", existingPositions, 
+                                      " position(s) in this direction");
+                            }
+                            if(existingPendingOrders > 0) {
+                                Print("⊘ Entry skipped: Already have ", existingPendingOrders, 
+                                      " pending order(s) in this direction");
+                            }
+                            if(alreadyTradedThisBar) {
+                                Print("⊘ Entry skipped: Already placed order this bar (one-trade-per-bar)");
+                            }
                         }
                     }
                 }

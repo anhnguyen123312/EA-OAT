@@ -446,7 +446,7 @@ bool CRiskManager::AddDCAPosition(int direction, double lots, double currentPric
     // Check if we can add more lots
     double currentLots = GetSideLots(direction);
     if(currentLots + lots > m_maxLotPerSide) {
-        Print("Cannot add DCA: would exceed max lot per side");
+        // Don't spam log here - caller will log once
         return false;
     }
     
@@ -471,10 +471,12 @@ bool CRiskManager::AddDCAPosition(int direction, double lots, double currentPric
     }
     
     if(OrderSend(request, result)) {
-        Print("DCA position added: ", lots, " lots");
+        // Success - caller will log
         return true;
     }
     
+    // Failed - log error details
+    Print("⚠ DCA OrderSend failed: ", result.retcode, " - ", result.comment);
     return false;
 }
 
@@ -635,22 +637,54 @@ void CRiskManager::ManageOpenPositions() {
         // DCA Add-on #1 at +0.75R
         if(profitR >= m_dcaLevel1_R && !m_positions[i].dca1Added && m_positions[i].dcaCount < m_maxDcaAddons) {
             double addLots = m_positions[i].originalLot * m_dcaSize1_Mult;
-            double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+            double currentLots = GetSideLots(direction);
             
-            if(AddDCAPosition(direction, addLots, currentPrice)) {
+            // Pre-check: Can we add this lot?
+            if(currentLots + addLots <= m_maxLotPerSide) {
+                double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+                
+                if(AddDCAPosition(direction, addLots, currentPrice)) {
+                    m_positions[i].dca1Added = true;
+                    m_positions[i].dcaCount++;
+                    Print("✓ DCA #1 added: ", addLots, " lots at +", DoubleToString(profitR, 2), "R");
+                } else {
+                    // Failed to add but mark as attempted to avoid retry
+                    m_positions[i].dca1Added = true;
+                    Print("✗ DCA #1 failed (order rejected) - marked as attempted");
+                }
+            } else {
+                // Cannot add - exceeds MaxLot, mark as attempted to stop retry
                 m_positions[i].dca1Added = true;
-                m_positions[i].dcaCount++;
+                Print("✗ DCA #1 skipped: would exceed MaxLotPerSide (", m_maxLotPerSide, 
+                      " lots). Current: ", currentLots, " + ", addLots, " = ", 
+                      currentLots + addLots);
             }
         }
         
         // DCA Add-on #2 at +1.5R
         if(profitR >= m_dcaLevel2_R && !m_positions[i].dca2Added && m_positions[i].dcaCount < m_maxDcaAddons) {
             double addLots = m_positions[i].originalLot * m_dcaSize2_Mult;
-            double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+            double currentLots = GetSideLots(direction);
             
-            if(AddDCAPosition(direction, addLots, currentPrice)) {
+            // Pre-check: Can we add this lot?
+            if(currentLots + addLots <= m_maxLotPerSide) {
+                double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+                
+                if(AddDCAPosition(direction, addLots, currentPrice)) {
+                    m_positions[i].dca2Added = true;
+                    m_positions[i].dcaCount++;
+                    Print("✓ DCA #2 added: ", addLots, " lots at +", DoubleToString(profitR, 2), "R");
+                } else {
+                    // Failed to add but mark as attempted to avoid retry
+                    m_positions[i].dca2Added = true;
+                    Print("✗ DCA #2 failed (order rejected) - marked as attempted");
+                }
+            } else {
+                // Cannot add - exceeds MaxLot, mark as attempted to stop retry
                 m_positions[i].dca2Added = true;
-                m_positions[i].dcaCount++;
+                Print("✗ DCA #2 skipped: would exceed MaxLotPerSide (", m_maxLotPerSide, 
+                      " lots). Current: ", currentLots, " + ", addLots, " = ", 
+                      currentLots + addLots);
             }
         }
     }

@@ -6,10 +6,12 @@
 #property version   "1.00"
 #property strict
 
-// Forward declarations
+// Include detectors for struct definitions (BOSSignal, SweepSignal, OrderBlock, FVGSignal)
+#include <detectors.mqh>
+
+// Forward declarations for classes
 class CRiskManager;
 class CExecutor;
-class CDetector;
 
 //+------------------------------------------------------------------+
 //| Drawing Class - Chart visualization for debugging               |
@@ -258,19 +260,53 @@ void CDrawDebug::DrawLabel(string text, int x, int y, color clr, string tag) {
 void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecutor *executor, 
                                  CDetector *detector, BOSSignal &lastBOS, SweepSignal &lastSweep, 
                                  OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore) {
-    // Create white background panel
+    // Create title bar - Dark blue for attention
+    string titleBarName = m_prefix + "Dashboard_Title";
+    ObjectDelete(0, titleBarName);
+    
+    if(ObjectCreate(0, titleBarName, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
+        ObjectSetInteger(0, titleBarName, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(0, titleBarName, OBJPROP_YDISTANCE, 20);
+        ObjectSetInteger(0, titleBarName, OBJPROP_XSIZE, 450);
+        ObjectSetInteger(0, titleBarName, OBJPROP_YSIZE, 35);
+        ObjectSetInteger(0, titleBarName, OBJPROP_BGCOLOR, C'0,70,140');  // Dark blue
+        ObjectSetInteger(0, titleBarName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+        ObjectSetInteger(0, titleBarName, OBJPROP_COLOR, clrWhite);
+        ObjectSetInteger(0, titleBarName, OBJPROP_WIDTH, 1);
+        ObjectSetInteger(0, titleBarName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, titleBarName, OBJPROP_BACK, true);
+        ObjectSetInteger(0, titleBarName, OBJPROP_SELECTABLE, false);
+    }
+    
+    // Create title text
+    string titleTextName = m_prefix + "Dashboard_TitleText";
+    ObjectDelete(0, titleTextName);
+    
+    if(ObjectCreate(0, titleTextName, OBJ_LABEL, 0, 0, 0)) {
+        ObjectSetInteger(0, titleTextName, OBJPROP_XDISTANCE, 20);
+        ObjectSetInteger(0, titleTextName, OBJPROP_YDISTANCE, 27);
+        ObjectSetInteger(0, titleTextName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetString(0, titleTextName, OBJPROP_TEXT, "[ SMC/ICT EA DASHBOARD v4.1 ]");
+        ObjectSetInteger(0, titleTextName, OBJPROP_COLOR, clrWhite);
+        ObjectSetInteger(0, titleTextName, OBJPROP_FONTSIZE, 11);
+        ObjectSetString(0, titleTextName, OBJPROP_FONT, "Arial Bold");
+        ObjectSetInteger(0, titleTextName, OBJPROP_SELECTABLE, false);
+        ObjectSetInteger(0, titleTextName, OBJPROP_BACK, false);
+    }
+    
+    // Create background panel - Light gray for better visibility
     string bgName = m_prefix + "Dashboard_BG";
     ObjectDelete(0, bgName);
     
     if(ObjectCreate(0, bgName, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
-        ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, 5);
-        ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, 15);
-        ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 420);
-        ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 550);
-        ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, clrWhite);
+        ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, 55);
+        ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 450);
+        ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 565);
+        ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, C'240,240,240');  // Light gray
         ObjectSetInteger(0, bgName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
         ObjectSetInteger(0, bgName, OBJPROP_COLOR, clrBlack);
-        ObjectSetInteger(0, bgName, OBJPROP_WIDTH, 1);
+        ObjectSetInteger(0, bgName, OBJPROP_WIDTH, 2);  // Thicker border
         ObjectSetInteger(0, bgName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
         ObjectSetInteger(0, bgName, OBJPROP_BACK, true);
         ObjectSetInteger(0, bgName, OBJPROP_SELECTABLE, false);
@@ -407,20 +443,21 @@ void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecu
     
     dashboard += "└─────────────────────────────────────────────┘";
     
-    // Draw dashboard text
+    // Draw dashboard text - LARGER & MORE VISIBLE
     string objName = m_prefix + "Dashboard";
     ObjectDelete(0, objName);
     
     if(ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0)) {
-        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 15);
-        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 25);
+        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 20);
+        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 65);  // Below title bar
         ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
         ObjectSetString(0, objName, OBJPROP_TEXT, dashboard);
-        ObjectSetInteger(0, objName, OBJPROP_COLOR, clrBlack);  // Black text on white background
-        ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 8);
-        ObjectSetString(0, objName, OBJPROP_FONT, "Courier New");
+        ObjectSetInteger(0, objName, OBJPROP_COLOR, clrBlack);  // Black text on light gray
+        ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 10);  // Larger font
+        ObjectSetString(0, objName, OBJPROP_FONT, "Consolas");  // Clearer font
         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-        ObjectSetInteger(0, objName, OBJPROP_BACK, false);  // Foreground
+        ObjectSetInteger(0, objName, OBJPROP_BACK, false);  // Foreground (on top)
+        ObjectSetInteger(0, objName, OBJPROP_HIDDEN, false);
     }
 }
 
