@@ -400,6 +400,9 @@ SweepSignal CDetector::DetectSweep() {
                     sweep.time = iTime(m_symbol, m_timeframe, i);
                     sweep.fractalIndex = j;
                     sweep.distanceBars = j - i;
+                    
+                    Print("💧 SWEEP HIGH detected: Bar ", i, " | Level: ", fractalHigh, 
+                          " | Wick: ", DoubleToString(upperWickPct, 1), "%");
                     return sweep;
                 }
             }
@@ -421,6 +424,9 @@ SweepSignal CDetector::DetectSweep() {
                     sweep.time = iTime(m_symbol, m_timeframe, i);
                     sweep.fractalIndex = j;
                     sweep.distanceBars = j - i;
+                    
+                    Print("💧 SWEEP LOW detected: Bar ", i, " | Level: ", fractalLow, 
+                          " | Wick: ", DoubleToString(lowerWickPct, 1), "%");
                     return sweep;
                 }
             }

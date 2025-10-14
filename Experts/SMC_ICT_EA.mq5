@@ -106,6 +106,49 @@ input int      InpMinStopPts      = 300;     // Min stop distance (points)
 input int      InpOrder_TTL_Bars  = 16;      // Pending order TTL (bars) - M15 4-8h
 
 //+------------------------------------------------------------------+
+//| [NEW] Input Parameters - Feature Toggles                        |
+//+------------------------------------------------------------------+
+input group "═══════ Feature Toggles ═══════"
+input bool     InpEnableDCA       = true;    // Enable DCA (Pyramiding)
+input bool     InpEnableBE        = true;    // Enable Breakeven
+input bool     InpEnableTrailing  = true;    // Enable Trailing Stop
+input bool     InpUseDailyMDD     = true;    // Enable Daily MDD Guard
+input bool     InpUseEquityMDD    = true;    // Use Equity for MDD (vs Balance)
+
+//+------------------------------------------------------------------+
+//| [NEW] Input Parameters - Dynamic Lot Sizing                     |
+//+------------------------------------------------------------------+
+input group "═══════ Dynamic Lot Sizing ═══════"
+input bool     InpUseEquityBasedLot = false; // Use % Equity for MaxLot
+input double   InpMaxLotPctEquity   = 10.0;  // Max lot as % of equity (if enabled)
+
+//+------------------------------------------------------------------+
+//| [NEW] Input Parameters - Trailing Stop                          |
+//+------------------------------------------------------------------+
+input group "═══════ Trailing Stop ═══════"
+input double   InpTrailStartR     = 1.0;     // Start trailing at +XR
+input double   InpTrailStepR      = 0.5;     // Move SL every +XR
+input double   InpTrailATRMult    = 2.0;     // Trail distance (ATR multiple)
+
+//+------------------------------------------------------------------+
+//| [NEW] Input Parameters - DCA Filters                            |
+//+------------------------------------------------------------------+
+input group "═══════ DCA Filters ═══════"
+input bool     InpDcaRequireConfluence = false; // Require new BOS/FVG before DCA
+input bool     InpDcaCheckEquity       = true;  // Check equity health before DCA
+input double   InpDcaMinEquityPct      = 95.0;  // Min equity % vs start balance
+
+//+------------------------------------------------------------------+
+//| [NEW] Input Parameters - DCA Levels (moved from hardcoded)     |
+//+------------------------------------------------------------------+
+input group "═══════ DCA Levels ═══════"
+input double   InpDcaLevel1_R     = 0.75;    // First DCA trigger (+XR)
+input double   InpDcaLevel2_R     = 1.5;     // Second DCA trigger (+XR)
+input double   InpDcaSize1_Mult   = 0.5;     // First DCA size (× original)
+input double   InpDcaSize2_Mult   = 0.33;    // Second DCA size (× original)
+input double   InpBeLevel_R       = 1.0;     // Breakeven trigger (+XR)
+
+//+------------------------------------------------------------------+
 //| Input Parameters - Visualization                                |
 //+------------------------------------------------------------------+
 input group "======= Visualization ======="
@@ -181,8 +224,22 @@ int OnInit() {
     }
     
     g_riskMgr = new CRiskManager();
-    g_riskMgr.Init(_Symbol, InpRiskPerTradePct, InpMaxLotBase, InpMaxDcaAddons, InpDailyMddMax,
-                   InpBasketTPPct, InpBasketSLPct, InpEndOfDayHour, InpDailyResetHour);
+    if(!g_riskMgr.Init(_Symbol, InpRiskPerTradePct, InpMaxLotBase, InpMaxDcaAddons, InpDailyMddMax,
+                       InpBasketTPPct, InpBasketSLPct, InpEndOfDayHour, InpDailyResetHour,
+                       // [NEW] Add all new parameters
+                       InpEnableDCA, InpEnableBE, InpEnableTrailing,
+                       InpUseDailyMDD, InpUseEquityMDD,
+                       InpUseEquityBasedLot, InpMaxLotPctEquity,
+                       InpTrailStartR, InpTrailStepR, InpTrailATRMult,
+                       InpDcaRequireConfluence, InpDcaCheckEquity, InpDcaMinEquityPct)) {
+        Print("ERROR: Failed to initialize risk manager");
+        return INIT_FAILED;
+    }
+    
+    // [NEW] Set DCA levels after init
+    g_riskMgr.SetDCALevels(InpDcaLevel1_R, InpDcaLevel2_R, 
+                           InpDcaSize1_Mult, InpDcaSize2_Mult,
+                           InpBeLevel_R);
     
     if(InpShowDebugDraw || InpShowDashboard) {
         g_drawer = new CDrawDebug();

@@ -115,17 +115,27 @@ bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
 //| Check if current time is within trading session                  |
 //+------------------------------------------------------------------+
 bool CExecutor::SessionOpen() {
-    datetime t = TimeCurrent();
     MqlDateTime s;
-    TimeToStruct(t, s);
+    TimeToStruct(TimeCurrent(), s); // Server time
     
-    // Calculate proper timezone offset: VN_GMT - Server_GMT
+    // [FIX] Calculate proper timezone offset
+    // VN_GMT - Server_GMT = delta to apply
     int server_gmt = (int)(TimeGMTOffset() / 3600);
     int vn_gmt = 7;
     int delta = vn_gmt - server_gmt;
     int hour_localvn = (s.hour + delta + 24) % 24;
     
-    return (hour_localvn >= m_sessStartHour && hour_localvn < m_sessEndHour);
+    bool inSession = (hour_localvn >= m_sessStartHour && hour_localvn < m_sessEndHour);
+    
+    // [DEBUG] Log once per hour for verification
+    static int lastLogHour = -1;
+    if(s.hour != lastLogHour) {
+        Print("🕐 Session Check | Server: ", s.hour, ":00 | VN Time: ", hour_localvn, 
+              ":00 | Status: ", inSession ? "IN SESSION ✅" : "CLOSED ❌");
+        lastLogHour = s.hour;
+    }
+    
+    return inSession;
 }
 
 //+------------------------------------------------------------------+
@@ -135,13 +145,23 @@ bool CExecutor::SpreadOK() {
     long spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD);
     double atr = GetATR();
     
-    // Dynamic spread filter: accept up to max(fixed threshold, ATR% guard)
+    // [NEW] Dynamic spread filter: accept up to max(fixed threshold, 8% of ATR)
     if(atr > 0) {
-        long dynamicMax = (long)MathMax(m_spreadMaxPts, m_spreadATRpct * atr / _Point);
-        return (spread <= dynamicMax);
+        long dynamicMax = (long)MathMax(m_spreadMaxPts, 0.08 * atr / _Point);
+        
+        if(spread > dynamicMax) {
+            Print("⚠️ Spread too wide: ", spread, " pts (max: ", dynamicMax, " pts)");
+            return false;
+        }
+        return true;
     }
     
-    return (spread <= m_spreadMaxPts);
+    // Fallback to static if can't get ATR
+    if(spread > m_spreadMaxPts) {
+        Print("⚠️ Spread too wide: ", spread, " pts (max: ", m_spreadMaxPts, " pts)");
+        return false;
+    }
+    return true;
 }
 
 //+------------------------------------------------------------------+
@@ -180,10 +200,10 @@ bool CExecutor::GetTriggerCandle(int direction, double &triggerHigh, double &tri
     double atr = GetATR();
     if(atr <= 0) return false;
     
-    // Spec ner.md: body >= max( (TriggerBodyATR/100)×ATR, 30 pts )
+    // [CHANGE] Lower threshold: 25% of ATR or minimum 30 points (3 pips)
     double minBodySize = MathMax((m_triggerBodyATR / 100.0) * atr, 30.0 * _Point);
     
-    // Scan bars 0-3 for trigger candle
+    // [CHANGE] Scan bars 0-3 instead of just 0-1
     for(int i = 0; i <= 3; i++) {
         double open = iOpen(m_symbol, m_timeframe, i);
         double close = iClose(m_symbol, m_timeframe, i);
@@ -196,17 +216,22 @@ bool CExecutor::GetTriggerCandle(int direction, double &triggerHigh, double &tri
             if(direction == -1 && close < open) {
                 triggerHigh = high;
                 triggerLow = low;
+                Print("🎯 Trigger SELL: Bar ", i, " | Body: ", (int)(bodySize/_Point), 
+                      " pts (min: ", (int)(minBodySize/_Point), " pts)");
                 return true;
             }
             // For buy setup, need bullish trigger
             else if(direction == 1 && close > open) {
                 triggerHigh = high;
                 triggerLow = low;
+                Print("🎯 Trigger BUY: Bar ", i, " | Body: ", (int)(bodySize/_Point), 
+                      " pts (min: ", (int)(minBodySize/_Point), " pts)");
                 return true;
             }
         }
     }
     
+    Print("❌ No trigger candle found (scanned bars 0-3)");
     return false;
 }
 
@@ -224,7 +249,7 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
         // BUY setup
         entry = triggerHigh + buffer;
         
-        // SL at sweep level or POI bottom - buffer, must be >= minStop
+        // SL at sweep level or POI bottom - buffer
         if(c.hasSweep) {
             sl = c.sweepLevel - buffer;
         } else if(c.hasOB || c.hasFVG) {
@@ -233,25 +258,23 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             return false;
         }
         
-        // Ensure minimum stop distance (soft limit, don't force >= ATR)
+        // [CHANGE] Only enforce minStop, don't force >= ATR
         double slDistance = entry - sl;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             sl = entry - minStopDistance;
+            Print("⚠️ SL adjusted to minStop: ", (int)(minStopDistance/_Point), " pts");
         }
         
         // Calculate TP based on RR
         double risk = entry - sl;
         tp = entry + (risk * m_minRR);
         
-        // Could also use opposite liquidity level if available
-        // For now using RR-based TP
-        
     } else if(c.direction == -1) {
         // SELL setup
         entry = triggerLow - buffer;
         
-        // SL at sweep level or POI top + buffer, must be >= minStop
+        // SL at sweep level or POI top + buffer
         if(c.hasSweep) {
             sl = c.sweepLevel + buffer;
         } else if(c.hasOB || c.hasFVG) {
@@ -260,11 +283,12 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             return false;
         }
         
-        // Ensure minimum stop distance (soft limit, don't force >= ATR)
+        // [CHANGE] Only enforce minStop, don't force >= ATR
         double slDistance = sl - entry;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             sl = entry + minStopDistance;
+            Print("⚠️ SL adjusted to minStop: ", (int)(minStopDistance/_Point), " pts");
         }
         
         // Calculate TP based on RR
@@ -281,10 +305,21 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
     tp = NormalizeDouble(tp, _Digits);
     
     // Calculate actual RR
+    // [FIX] Prevent divide by zero
     if(c.direction == 1) {
-        rr = (tp - entry) / (entry - sl);
+        double denominator = entry - sl;
+        if(MathAbs(denominator) < _Point) {
+            Print("❌ Invalid entry/SL: too close together");
+            return false;
+        }
+        rr = (tp - entry) / denominator;
     } else {
-        rr = (entry - tp) / (sl - entry);
+        double denominator = sl - entry;
+        if(MathAbs(denominator) < _Point) {
+            Print("❌ Invalid entry/SL: too close together");
+            return false;
+        }
+        rr = (entry - tp) / denominator;
     }
     
     // Check if RR meets minimum

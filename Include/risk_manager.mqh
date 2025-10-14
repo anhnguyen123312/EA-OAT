@@ -29,6 +29,27 @@ private:
     // BE and Trail parameters
     double   m_beLevel_R;         // +1R for breakeven
     
+    // [NEW] Feature toggles
+    bool     m_enableDCA;
+    bool     m_enableBE;
+    bool     m_enableTrailing;
+    bool     m_useDailyMDD;
+    bool     m_useEquityMDD;      // Use equity instead of balance
+    
+    // [NEW] Dynamic lot sizing
+    bool     m_useEquityBasedLot;
+    double   m_maxLotPctEquity;   // % of equity for max lot
+    
+    // [NEW] Trailing parameters
+    double   m_trailStartR;        // Start trailing at +XR
+    double   m_trailStepR;         // Move SL every +XR
+    double   m_trailATRMult;       // Trail distance = ATR × mult
+    
+    // [NEW] DCA confluence filter
+    bool     m_dcaRequireConfluence;
+    bool     m_dcaCheckEquity;
+    double   m_dcaMinEquityPct;   // Min equity % vs start balance
+    
     // Daily tracking (GMT+7)
     double   m_startDayBalance;
     double   m_initialBalance;    // Balance at 6h GMT+7
@@ -55,6 +76,7 @@ private:
         bool     movedToBE;
         bool     dca1Added;
         bool     dca2Added;
+        double   lastTrailR;    // [NEW] Track last trail level to avoid too frequent updates
     };
     PositionDCA m_positions[];
     
@@ -62,8 +84,18 @@ public:
     CRiskManager();
     ~CRiskManager();
     
-    void Init(string symbol, double riskPct, double maxLotBase, int maxDCA, double dailyMDD,
-              double basketTPPct, double basketSLPct, int endOfDayHour, int dailyResetHour);
+    bool Init(string symbol, double riskPct, double maxLotBase, int maxDCA, double dailyMDD,
+              double basketTPPct, double basketSLPct, int endOfDayHour, int dailyResetHour,
+              // [NEW] Add these parameters
+              bool enableDCA, bool enableBE, bool enableTrailing, 
+              bool useDailyMDD, bool useEquityMDD,
+              bool useEquityBasedLot, double maxLotPctEquity,
+              double trailStartR, double trailStepR, double trailATRMult,
+              bool dcaRequireConfluence, bool dcaCheckEquity, double dcaMinEquityPct);
+    
+    void SetDCALevels(double level1R, double level2R, 
+                      double size1Mult, double size2Mult,
+                      double beLevel);
     
     double CalcLotsByRisk(double riskPct, double slPoints);
     double GetMaxLotPerSide() { return m_maxLotPerSide; }
@@ -94,6 +126,14 @@ private:
     bool   AddDCAPosition(int direction, double lots, double currentPrice);
     void   CloseAllPositions(string reason);
     int    GetLocalHour();
+    
+    // [NEW] Trailing stop methods
+    double GetATR();
+    double CalcTrailLevel(ulong ticket, double profitR);
+    bool   TrailSL(ulong ticket);
+    bool   CheckDCAConfluence(int direction);
+    bool   CheckEquityHealth();
+    double GetEffectiveMaxLot();
 };
 
 //+------------------------------------------------------------------+
@@ -112,6 +152,27 @@ CRiskManager::CRiskManager() {
     m_dcaSize2_Mult = 0.33;
     
     m_beLevel_R = 1.0;
+    
+    // [NEW] Feature toggles defaults
+    m_enableDCA = true;
+    m_enableBE = true;
+    m_enableTrailing = true;
+    m_useDailyMDD = true;
+    m_useEquityMDD = false;
+    
+    // [NEW] Dynamic lot sizing defaults
+    m_useEquityBasedLot = false;
+    m_maxLotPctEquity = 10.0;
+    
+    // [NEW] Trailing defaults
+    m_trailStartR = 1.0;
+    m_trailStepR = 0.5;
+    m_trailATRMult = 2.0;
+    
+    // [NEW] DCA filters defaults
+    m_dcaRequireConfluence = false;
+    m_dcaCheckEquity = true;
+    m_dcaMinEquityPct = 95.0;
     
     m_dailyResetHour = 6;  // 6h GMT+7
     m_tradingHalted = false;
@@ -138,8 +199,15 @@ CRiskManager::~CRiskManager() {
 //+------------------------------------------------------------------+
 //| Initialize risk manager                                          |
 //+------------------------------------------------------------------+
-void CRiskManager::Init(string symbol, double riskPct, double maxLotBase, int maxDCA, double dailyMDD,
-                        double basketTPPct, double basketSLPct, int endOfDayHour, int dailyResetHour) {
+bool CRiskManager::Init(string symbol, double riskPct, double maxLotBase, int maxDCA, double dailyMDD,
+                        double basketTPPct, double basketSLPct, int endOfDayHour, int dailyResetHour,
+                        // [NEW] Add these parameters
+                        bool enableDCA, bool enableBE, bool enableTrailing, 
+                        bool useDailyMDD, bool useEquityMDD,
+                        bool useEquityBasedLot, double maxLotPctEquity,
+                        double trailStartR, double trailStepR, double trailATRMult,
+                        bool dcaRequireConfluence, bool dcaCheckEquity, double dcaMinEquityPct) {
+    
     m_symbol = symbol;
     m_riskPerTradePct = riskPct;
     m_maxLotBase = maxLotBase;
@@ -154,7 +222,42 @@ void CRiskManager::Init(string symbol, double riskPct, double maxLotBase, int ma
     m_enableBasketSL = (basketSLPct > 0);
     m_enableEODClose = (endOfDayHour > 0);
     
+    // [NEW] Feature toggles
+    m_enableDCA = enableDCA;
+    m_enableBE = enableBE;
+    m_enableTrailing = enableTrailing;
+    m_useDailyMDD = useDailyMDD;
+    m_useEquityMDD = useEquityMDD;
+    
+    // [NEW] Dynamic lot sizing
+    m_useEquityBasedLot = useEquityBasedLot;
+    m_maxLotPctEquity = maxLotPctEquity;
+    
+    // [NEW] Trailing parameters
+    m_trailStartR = trailStartR;
+    m_trailStepR = trailStepR;
+    m_trailATRMult = trailATRMult;
+    
+    // [NEW] DCA filters
+    m_dcaRequireConfluence = dcaRequireConfluence;
+    m_dcaCheckEquity = dcaCheckEquity;
+    m_dcaMinEquityPct = dcaMinEquityPct;
+    
     ResetDailyTracking();
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Set DCA Levels                                                    |
+//+------------------------------------------------------------------+
+void CRiskManager::SetDCALevels(double level1R, double level2R, 
+                                double size1Mult, double size2Mult,
+                                double beLevel) {
+    m_dcaLevel1_R = level1R;
+    m_dcaLevel2_R = level2R;
+    m_dcaSize1_Mult = size1Mult;
+    m_dcaSize2_Mult = size2Mult;
+    m_beLevel_R = beLevel;
 }
 
 //+------------------------------------------------------------------+
@@ -168,11 +271,12 @@ double CRiskManager::GetCurrentEquity() {
 //| Calculate lot size based on risk                                 |
 //+------------------------------------------------------------------+
 double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
-    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    // [CHANGE] Use equity instead of balance for more accuracy
     double equity = GetCurrentEquity();
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double baseValue = m_useEquityMDD ? equity : balance;
     
-    // Use balance for calculation
-    double riskValue = balance * (riskPct / 100.0);
+    double riskValue = baseValue * (riskPct / 100.0);
     
     // Get tick value
     double tickValue = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
@@ -186,15 +290,39 @@ double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
     // Calculate lots
     double lots = riskValue / (slPoints * valuePerPointPerLot);
     
-    // Normalize and apply limits
+    // Normalize
     lots = NormalizeDouble(lots, 2);
     
+    // Apply min/max limits
     double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
     double maxLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MAX);
     
     if(lots < minLot) lots = minLot;
     if(lots > maxLot) lots = maxLot;
-    if(lots > m_maxLotPerSide) lots = m_maxLotPerSide;
+    
+    // [NEW] Dynamic max lot based on equity
+    double effectiveMaxLot = m_maxLotPerSide;
+    if(m_useEquityBasedLot) {
+        double tickValuePerLot = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
+        double contractSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+        double currentPrice = (SymbolInfoDouble(m_symbol, SYMBOL_BID) + 
+                              SymbolInfoDouble(m_symbol, SYMBOL_ASK)) / 2.0;
+        
+        double maxExposure = equity * (m_maxLotPctEquity / 100.0);
+        // [FIX] Prevent divide by zero
+        double denominator = contractSize * currentPrice / 100.0;
+        if(denominator > 0) {
+            effectiveMaxLot = maxExposure / denominator; // Adjust for XAU
+            effectiveMaxLot = NormalizeDouble(effectiveMaxLot, 2);
+        } else {
+            effectiveMaxLot = m_maxLotPerSide; // Fallback to static
+        }
+        
+        // Use minimum of static and dynamic
+        effectiveMaxLot = MathMin(effectiveMaxLot, m_maxLotPerSide);
+    }
+    
+    if(lots > effectiveMaxLot) lots = effectiveMaxLot;
     
     return lots;
 }
@@ -267,7 +395,11 @@ void CRiskManager::UpdateMaxLotPerSide() {
 //| Get daily P/L percentage                                         |
 //+------------------------------------------------------------------+
 double CRiskManager::GetDailyPL() {
-    if(m_startDayBalance <= 0) return 0;
+    // [FIX] Prevent divide by zero
+    if(m_startDayBalance <= 0) {
+        m_startDayBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+        if(m_startDayBalance <= 0) return 0;
+    }
     
     double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
     double pl = ((currentBalance - m_startDayBalance) / m_startDayBalance) * 100.0;
@@ -279,14 +411,36 @@ double CRiskManager::GetDailyPL() {
 //| Check daily MDD and halt trading if exceeded                     |
 //+------------------------------------------------------------------+
 bool CRiskManager::CheckDailyMDD() {
+    // [NEW] Can be disabled
+    if(!m_useDailyMDD) return true;
+    
     ResetDailyTracking(); // Check if new day
     
     if(m_tradingHalted) return false;
     
-    double dailyPL = GetDailyPL();
+    // [CHANGE] Use equity or balance based on setting
+    double current = m_useEquityMDD ? GetCurrentEquity() : AccountInfoDouble(ACCOUNT_BALANCE);
+    double start = m_useEquityMDD ? m_startDayBalance : m_startDayBalance;
+    
+    // [FIX] Prevent divide by zero
+    if(start <= 0) {
+        start = AccountInfoDouble(ACCOUNT_BALANCE);
+        m_startDayBalance = start;
+        if(start <= 0) return true; // Cannot calculate, allow trading
+    }
+    
+    double dailyPL = ((current - start) / start) * 100.0;
     
     if(dailyPL <= -m_dailyMddMax) {
-        Print("DAILY MDD EXCEEDED: ", dailyPL, "% - Closing all positions and halting trading");
+        Print("═══════════════════════════════════════");
+        Print("⚠️ DAILY MDD EXCEEDED: ", DoubleToString(dailyPL, 2), "%");
+        Print("   Start: $", DoubleToString(start, 2));
+        Print("   Current: $", DoubleToString(current, 2));
+        Print("   Loss: $", DoubleToString(current - start, 2));
+        Print("═══════════════════════════════════════");
+        Print("🛑 CLOSING ALL POSITIONS AND HALTING TRADING");
+        Print("═══════════════════════════════════════");
+        
         m_tradingHalted = true;
         
         // Close all positions
@@ -314,7 +468,9 @@ bool CRiskManager::CheckDailyMDD() {
                     }
                     
                     if(!OrderSend(request, result)) {
-                        Print("Failed to close position on MDD: ", result.retcode);
+                        Print("❌ Failed to close position on MDD: ", result.retcode);
+                    } else {
+                        Print("✅ Closed position #", ticket);
                     }
                 }
             }
@@ -376,6 +532,168 @@ void CRiskManager::TrackPosition(ulong ticket, double entry, double sl, double t
     m_positions[size].movedToBE = false;
     m_positions[size].dca1Added = false;
     m_positions[size].dca2Added = false;
+    m_positions[size].lastTrailR = 0.0;  // [NEW] Initialize trailing tracker
+}
+
+//+------------------------------------------------------------------+
+//| Get ATR value for trailing calculation                          |
+//+------------------------------------------------------------------+
+double CRiskManager::GetATR() {
+    int atrHandle = iATR(m_symbol, PERIOD_CURRENT, 14);
+    if(atrHandle == INVALID_HANDLE) return 0;
+    
+    double atr[];
+    ArraySetAsSeries(atr, true);
+    if(CopyBuffer(atrHandle, 0, 0, 2, atr) > 0) {
+        IndicatorRelease(atrHandle);
+        return atr[0];
+    }
+    
+    IndicatorRelease(atrHandle);
+    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate trailing stop level                                    |
+//+------------------------------------------------------------------+
+double CRiskManager::CalcTrailLevel(ulong ticket, double profitR) {
+    if(!PositionSelectByTicket(ticket)) return 0;
+    
+    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+    double currentSL = PositionGetDouble(POSITION_SL);
+    int posType = (int)PositionGetInteger(POSITION_TYPE);
+    
+    double atr = GetATR();
+    if(atr == 0) return currentSL; // Keep current if can't get ATR
+    
+    double trailDistance = atr * m_trailATRMult;
+    double newSL = currentSL;
+    
+    if(posType == POSITION_TYPE_BUY) {
+        // Trail up: newSL = currentPrice - trailDistance
+        double candidateSL = currentPrice - trailDistance;
+        if(candidateSL > currentSL) {
+            newSL = candidateSL;
+        }
+    } else {
+        // Trail down: newSL = currentPrice + trailDistance
+        double candidateSL = currentPrice + trailDistance;
+        if(candidateSL < currentSL) {
+            newSL = candidateSL;
+        }
+    }
+    
+    return NormalizeDouble(newSL, _Digits);
+}
+
+//+------------------------------------------------------------------+
+//| Move SL using trailing logic                                     |
+//+------------------------------------------------------------------+
+bool CRiskManager::TrailSL(ulong ticket) {
+    if(!PositionSelectByTicket(ticket)) return false;
+    
+    double profitR = CalcProfitInR(ticket);
+    
+    // Only trail if profit >= trail start level
+    if(profitR < m_trailStartR) return false;
+    
+    double newSL = CalcTrailLevel(ticket, profitR);
+    double currentSL = PositionGetDouble(POSITION_SL);
+    double tp = PositionGetDouble(POSITION_TP);
+    int posType = (int)PositionGetInteger(POSITION_TYPE);
+    
+    // Check if newSL is better than current
+    bool shouldUpdate = false;
+    if(posType == POSITION_TYPE_BUY && newSL > currentSL) {
+        shouldUpdate = true;
+    } else if(posType == POSITION_TYPE_SELL && newSL < currentSL) {
+        shouldUpdate = true;
+    }
+    
+    if(!shouldUpdate) return false;
+    
+    MqlTradeRequest request;
+    MqlTradeResult result;
+    ZeroMemory(request);
+    ZeroMemory(result);
+    
+    request.action = TRADE_ACTION_SLTP;
+    request.position = ticket;
+    request.symbol = m_symbol;
+    request.sl = newSL;
+    request.tp = tp;
+    
+    if(OrderSend(request, result)) {
+        double pointsMoved = MathAbs(newSL - currentSL) / _Point;
+        Print("📈 Trailing SL: #", ticket, 
+              " | New SL: ", newSL, 
+              " | Moved: ", (int)pointsMoved, " pts",
+              " | Profit: ", DoubleToString(profitR, 2), "R");
+        return true;
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check if should add DCA based on confluence                      |
+//+------------------------------------------------------------------+
+bool CRiskManager::CheckDCAConfluence(int direction) {
+    // [NEW] Optional confluence check
+    if(!m_dcaRequireConfluence) return true; // Skip check if disabled
+    
+    // TODO: Hook into detector to check for new BOS/FVG/OB
+    // For now, return true (will be implemented in integration)
+    // This requires passing detector instance to RiskManager
+    
+    return true; // Placeholder
+}
+
+//+------------------------------------------------------------------+
+//| Check equity health before DCA                                   |
+//+------------------------------------------------------------------+
+bool CRiskManager::CheckEquityHealth() {
+    if(!m_dcaCheckEquity) return true; // Skip if disabled
+    
+    double currentEquity = GetCurrentEquity();
+    // [FIX] Handle zero start balance
+    if(m_startDayBalance <= 0) {
+        m_startDayBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+    }
+    double minEquity = m_startDayBalance * (m_dcaMinEquityPct / 100.0);
+    
+    if(currentEquity < minEquity) {
+        Print("⚠️ DCA Blocked: Equity $", DoubleToString(currentEquity, 2),
+              " < ", DoubleToString(m_dcaMinEquityPct, 0), "% of start ($", 
+              DoubleToString(minEquity, 2), ")");
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Get effective max lot (dynamic or static)                        |
+//+------------------------------------------------------------------+
+double CRiskManager::GetEffectiveMaxLot() {
+    if(!m_useEquityBasedLot) return m_maxLotPerSide;
+    
+    double equity = GetCurrentEquity();
+    double tickValuePerLot = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
+    double contractSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+    double currentPrice = (SymbolInfoDouble(m_symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(m_symbol, SYMBOL_ASK)) / 2.0;
+    
+    double maxExposure = equity * (m_maxLotPctEquity / 100.0);
+    // [FIX] Prevent divide by zero
+    double denominator = contractSize * currentPrice / 100.0;
+    if(denominator <= 0) return m_maxLotPerSide; // Fallback to static
+    
+    double dynamicMax = maxExposure / denominator;
+    dynamicMax = NormalizeDouble(dynamicMax, 2);
+    
+    return MathMin(dynamicMax, m_maxLotPerSide);
 }
 
 //+------------------------------------------------------------------+
@@ -627,64 +945,76 @@ void CRiskManager::ManageOpenPositions() {
         int posType = (int)PositionGetInteger(POSITION_TYPE);
         int direction = (posType == POSITION_TYPE_BUY) ? 1 : -1;
         
-        // Move to BE at +1R
-        if(profitR >= m_beLevel_R && !m_positions[i].movedToBE) {
-            if(MoveSLToBE(ticket)) {
-                m_positions[i].movedToBE = true;
+        // === [NEW] TRAILING STOP (Always active if enabled) ===
+        if(m_enableTrailing) {
+            if(profitR >= m_trailStartR) {
+                // Check if should move SL based on step
+                double lastTrailR = m_positions[i].lastTrailR;
+                if(profitR >= lastTrailR + m_trailStepR) {
+                    if(TrailSL(ticket)) {
+                        m_positions[i].lastTrailR = profitR;
+                    }
+                }
             }
         }
         
-        // DCA Add-on #1 at +0.75R
-        if(profitR >= m_dcaLevel1_R && !m_positions[i].dca1Added && m_positions[i].dcaCount < m_maxDcaAddons) {
-            double addLots = m_positions[i].originalLot * m_dcaSize1_Mult;
-            double currentLots = GetSideLots(direction);
-            
-            // Pre-check: Can we add this lot?
-            if(currentLots + addLots <= m_maxLotPerSide) {
-                double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-                
-                if(AddDCAPosition(direction, addLots, currentPrice)) {
-                    m_positions[i].dca1Added = true;
-                    m_positions[i].dcaCount++;
-                    Print("✓ DCA #1 added: ", addLots, " lots at +", DoubleToString(profitR, 2), "R");
-                } else {
-                    // Failed to add but mark as attempted to avoid retry
-                    m_positions[i].dca1Added = true;
-                    Print("✗ DCA #1 failed (order rejected) - marked as attempted");
+        // === BREAKEVEN (if enabled) ===
+        if(m_enableBE) {
+            if(profitR >= m_beLevel_R && !m_positions[i].movedToBE) {
+                if(MoveSLToBE(ticket)) {
+                    m_positions[i].movedToBE = true;
+                    Print("🎯 Breakeven: #", ticket, " at +", DoubleToString(profitR, 2), "R");
                 }
-            } else {
-                // Cannot add - exceeds MaxLot, mark as attempted to stop retry
-                m_positions[i].dca1Added = true;
-                Print("✗ DCA #1 skipped: would exceed MaxLotPerSide (", m_maxLotPerSide, 
-                      " lots). Current: ", currentLots, " + ", addLots, " = ", 
-                      currentLots + addLots);
             }
         }
         
-        // DCA Add-on #2 at +1.5R
-        if(profitR >= m_dcaLevel2_R && !m_positions[i].dca2Added && m_positions[i].dcaCount < m_maxDcaAddons) {
-            double addLots = m_positions[i].originalLot * m_dcaSize2_Mult;
-            double currentLots = GetSideLots(direction);
+        // === DCA (if enabled) ===
+        if(m_enableDCA) {
+            // [NEW] Check equity health before DCA
+            if(!CheckEquityHealth()) continue;
             
-            // Pre-check: Can we add this lot?
-            if(currentLots + addLots <= m_maxLotPerSide) {
+            // [NEW] Check confluence if required
+            if(!CheckDCAConfluence(direction)) continue;
+            
+            // DCA Add-on #1 at configured level
+            if(profitR >= m_dcaLevel1_R && !m_positions[i].dca1Added && 
+               m_positions[i].dcaCount < m_maxDcaAddons) {
+                
+                double addLots = m_positions[i].originalLot * m_dcaSize1_Mult;
                 double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
                 
-                if(AddDCAPosition(direction, addLots, currentPrice)) {
-                    m_positions[i].dca2Added = true;
-                    m_positions[i].dcaCount++;
-                    Print("✓ DCA #2 added: ", addLots, " lots at +", DoubleToString(profitR, 2), "R");
+                // Check total lot limit
+                if(GetSideLots(direction) + addLots <= GetEffectiveMaxLot()) {
+                    if(AddDCAPosition(direction, addLots, currentPrice)) {
+                        m_positions[i].dca1Added = true;
+                        m_positions[i].dcaCount++;
+                        Print("➕ DCA #1: ", addLots, " lots at +", 
+                              DoubleToString(profitR, 2), "R");
+                    }
                 } else {
-                    // Failed to add but mark as attempted to avoid retry
-                    m_positions[i].dca2Added = true;
-                    Print("✗ DCA #2 failed (order rejected) - marked as attempted");
+                    m_positions[i].dca1Added = true;
+                    Print("✗ DCA #1 skipped: would exceed MaxLot");
                 }
-            } else {
-                // Cannot add - exceeds MaxLot, mark as attempted to stop retry
-                m_positions[i].dca2Added = true;
-                Print("✗ DCA #2 skipped: would exceed MaxLotPerSide (", m_maxLotPerSide, 
-                      " lots). Current: ", currentLots, " + ", addLots, " = ", 
-                      currentLots + addLots);
+            }
+            
+            // DCA Add-on #2 at configured level
+            if(profitR >= m_dcaLevel2_R && !m_positions[i].dca2Added && 
+               m_positions[i].dcaCount < m_maxDcaAddons) {
+                
+                double addLots = m_positions[i].originalLot * m_dcaSize2_Mult;
+                double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+                
+                if(GetSideLots(direction) + addLots <= GetEffectiveMaxLot()) {
+                    if(AddDCAPosition(direction, addLots, currentPrice)) {
+                        m_positions[i].dca2Added = true;
+                        m_positions[i].dcaCount++;
+                        Print("➕ DCA #2: ", addLots, " lots at +", 
+                              DoubleToString(profitR, 2), "R");
+                    }
+                } else {
+                    m_positions[i].dca2Added = true;
+                    Print("✗ DCA #2 skipped: would exceed MaxLot");
+                }
             }
         }
     }

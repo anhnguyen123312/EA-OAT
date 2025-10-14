@@ -193,7 +193,14 @@ Candidate CArbiter::BuildCandidate(const BOSSignal &bos, const SweepSignal &swee
         c.hasBOS = true;
         c.direction = bos.direction;
     } else {
-        return c; // Need BOS for valid setup
+        // [ADD] If no BOS, allow momentum-based entry
+        if(momo.valid) {
+            c.direction = momo.direction;
+            c.hasMomo = true;
+            Print("📊 Entry via MOMENTUM (no BOS)");
+        } else {
+            return c; // Need either BOS or Momentum
+        }
     }
     
     // Check Sweep
@@ -251,6 +258,11 @@ Candidate CArbiter::BuildCandidate(const BOSSignal &bos, const SweepSignal &swee
     bool pathB = c.hasSweep && (c.hasOB || c.hasFVG) && c.hasMomo && !c.momoAgainstSmc;
     
     c.valid = (pathA || pathB);
+    
+    if(c.valid) {
+        string path = pathA ? "Path A (BOS+POI)" : "Path B (Sweep+POI+Momo)";
+        Print("✅ Valid Candidate: ", path, " | Direction: ", c.direction == 1 ? "LONG" : "SHORT");
+    }
     
     return c;
 }
