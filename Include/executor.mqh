@@ -30,6 +30,12 @@ private:
     int      m_orderTTL_Bars;
     double   m_minRR;
     
+    // [NEW] Fixed SL/TP mode
+    bool     m_useFixedSL;
+    int      m_fixedSL_Pips;
+    bool     m_fixedTP_Enable;
+    int      m_fixedTP_Pips;
+    
     // Handles
     int      m_atrHandle;
     
@@ -47,7 +53,8 @@ public:
     
     bool Init(string symbol, ENUM_TIMEFRAMES tf,
               int sessStart, int sessEnd, int spreadMax, double spreadATRpct,
-              int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR);
+              int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR,
+              bool useFixedSL, int fixedSL_Pips, bool fixedTP_Enable, int fixedTP_Pips);
     
     bool SessionOpen();
     bool SpreadOK();
@@ -71,6 +78,10 @@ private:
 CExecutor::CExecutor() {
     m_atrHandle = INVALID_HANDLE;
     m_timezoneOffset = 7; // GMT+7 for Asia/Ho_Chi_Minh
+    m_useFixedSL = false;
+    m_fixedSL_Pips = 100;
+    m_fixedTP_Enable = false;
+    m_fixedTP_Pips = 200;
     ArrayResize(m_pendingOrders, 0);
 }
 
@@ -88,7 +99,8 @@ CExecutor::~CExecutor() {
 //+------------------------------------------------------------------+
 bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
                      int sessStart, int sessEnd, int spreadMax, double spreadATRpct,
-                     int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR) {
+                     int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR,
+                     bool useFixedSL, int fixedSL_Pips, bool fixedTP_Enable, int fixedTP_Pips) {
     m_symbol = symbol;
     m_timeframe = tf;
     m_sessStartHour = sessStart;
@@ -100,6 +112,12 @@ bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
     m_minStopPts = minStop;
     m_orderTTL_Bars = orderTTL;
     m_minRR = minRR;
+    
+    // [NEW] Fixed SL/TP mode
+    m_useFixedSL = useFixedSL;
+    m_fixedSL_Pips = fixedSL_Pips;
+    m_fixedTP_Enable = fixedTP_Enable;
+    m_fixedTP_Pips = fixedTP_Pips;
     
     // Create ATR handle
     m_atrHandle = iATR(m_symbol, m_timeframe, 14);
@@ -249,51 +267,99 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
         // BUY setup
         entry = triggerHigh + buffer;
         
-        // SL at sweep level or POI bottom - buffer
+        // [STEP 1] Calculate METHOD-based SL & TP first
+        double methodSL = 0;
+        double methodTP = 0;
+        
         if(c.hasSweep) {
-            sl = c.sweepLevel - buffer;
+            methodSL = c.sweepLevel - buffer;
         } else if(c.hasOB || c.hasFVG) {
-            sl = c.poiBottom - buffer;
+            methodSL = c.poiBottom - buffer;
         } else {
             return false;
         }
         
-        // [CHANGE] Only enforce minStop, don't force >= ATR
-        double slDistance = entry - sl;
+        // Ensure minimum stop distance for method SL
+        double slDistance = entry - methodSL;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
-            sl = entry - minStopDistance;
-            Print("⚠️ SL adjusted to minStop: ", (int)(minStopDistance/_Point), " pts");
+            methodSL = entry - minStopDistance;
         }
         
-        // Calculate TP based on RR
-        double risk = entry - sl;
-        tp = entry + (risk * m_minRR);
+        // Calculate method-based TP (RR-based on method SL)
+        double methodRisk = entry - methodSL;
+        methodTP = entry + (methodRisk * m_minRR);
+        
+        // [STEP 2] Apply FIXED SL if enabled (ưu tiên config)
+        if(m_useFixedSL) {
+            double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
+            sl = entry - fixedSL_Distance;
+            Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips (override method)");
+        } else {
+            sl = methodSL;
+            Print("🎯 METHOD SL: ", (int)((entry - sl)/_Point/10), " pips (from structure)");
+        }
+        
+        // [STEP 3] TP: Luôn dùng PHƯƠNG PHÁP (không theo RR của Fixed SL)
+        if(m_fixedTP_Enable) {
+            // Fixed TP absolute
+            double fixedTP_Distance = m_fixedTP_Pips * 10 * _Point;
+            tp = entry + fixedTP_Distance;
+            Print("📌 FIXED TP: ", m_fixedTP_Pips, " pips (absolute)");
+        } else {
+            // TP từ phương pháp (không phụ thuộc Fixed SL)
+            tp = methodTP;
+            Print("🎯 METHOD TP: ", (int)((tp - entry)/_Point/10), " pips (from method RR)");
+        }
         
     } else if(c.direction == -1) {
         // SELL setup
         entry = triggerLow - buffer;
         
-        // SL at sweep level or POI top + buffer
+        // [STEP 1] Calculate METHOD-based SL & TP first
+        double methodSL = 0;
+        double methodTP = 0;
+        
         if(c.hasSweep) {
-            sl = c.sweepLevel + buffer;
+            methodSL = c.sweepLevel + buffer;
         } else if(c.hasOB || c.hasFVG) {
-            sl = c.poiTop + buffer;
+            methodSL = c.poiTop + buffer;
         } else {
             return false;
         }
         
-        // [CHANGE] Only enforce minStop, don't force >= ATR
-        double slDistance = sl - entry;
+        // Ensure minimum stop distance for method SL
+        double slDistance = methodSL - entry;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
-            sl = entry + minStopDistance;
-            Print("⚠️ SL adjusted to minStop: ", (int)(minStopDistance/_Point), " pts");
+            methodSL = entry + minStopDistance;
         }
         
-        // Calculate TP based on RR
-        double risk = sl - entry;
-        tp = entry - (risk * m_minRR);
+        // Calculate method-based TP (RR-based on method SL)
+        double methodRisk = methodSL - entry;
+        methodTP = entry - (methodRisk * m_minRR);
+        
+        // [STEP 2] Apply FIXED SL if enabled (ưu tiên config)
+        if(m_useFixedSL) {
+            double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
+            sl = entry + fixedSL_Distance;
+            Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips (override method)");
+        } else {
+            sl = methodSL;
+            Print("🎯 METHOD SL: ", (int)((sl - entry)/_Point/10), " pips (from structure)");
+        }
+        
+        // [STEP 3] TP: Luôn dùng PHƯƠNG PHÁP (không theo RR của Fixed SL)
+        if(m_fixedTP_Enable) {
+            // Fixed TP absolute
+            double fixedTP_Distance = m_fixedTP_Pips * 10 * _Point;
+            tp = entry - fixedTP_Distance;
+            Print("📌 FIXED TP: ", m_fixedTP_Pips, " pips (absolute)");
+        } else {
+            // TP từ phương pháp (không phụ thuộc Fixed SL)
+            tp = methodTP;
+            Print("🎯 METHOD TP: ", (int)((entry - tp)/_Point/10), " pips (from method RR)");
+        }
         
     } else {
         return false;

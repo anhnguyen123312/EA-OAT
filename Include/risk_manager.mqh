@@ -15,8 +15,11 @@ private:
     
     // Risk parameters
     double   m_riskPerTradePct;   // % of equity per trade
-    double   m_maxLotBase;        // Base max lot (1.0)
-    double   m_maxLotPerSide;     // Dynamic calculated
+    double   m_lotBase;           // Base lot size (starting)
+    double   m_lotMax;            // Max lot size (cap)
+    double   m_equityPerLotInc;   // Equity per lot increment
+    double   m_lotIncrement;      // Lot increment per equity step
+    double   m_maxLotPerSide;     // Dynamic calculated (current max lot)
     int      m_maxDcaAddons;
     double   m_dailyMddMax;       // Max daily drawdown %
     
@@ -97,6 +100,9 @@ public:
                       double size1Mult, double size2Mult,
                       double beLevel);
     
+    void SetLotSizingParams(double lotBase, double lotMax, 
+                           double equityPerLotInc, double lotIncrement);
+    
     double CalcLotsByRisk(double riskPct, double slPoints);
     double GetMaxLotPerSide() { return m_maxLotPerSide; }
     double GetInitialBalance() { return m_initialBalance; }
@@ -140,9 +146,12 @@ private:
 //| Constructor                                                       |
 //+------------------------------------------------------------------+
 CRiskManager::CRiskManager() {
-    m_riskPerTradePct = 0.3;
-    m_maxLotBase = 1.0;
-    m_maxLotPerSide = 1.0;
+    m_riskPerTradePct = 0.5;
+    m_lotBase = 0.1;
+    m_lotMax = 5.0;
+    m_equityPerLotInc = 1000.0;
+    m_lotIncrement = 0.1;
+    m_maxLotPerSide = 0.1;
     m_maxDcaAddons = 2;
     m_dailyMddMax = 8.0;
     
@@ -210,7 +219,7 @@ bool CRiskManager::Init(string symbol, double riskPct, double maxLotBase, int ma
     
     m_symbol = symbol;
     m_riskPerTradePct = riskPct;
-    m_maxLotBase = maxLotBase;
+    m_lotBase = maxLotBase;  // [FIX] Correct variable name
     m_maxDcaAddons = maxDCA;
     m_dailyMddMax = dailyMDD;
     
@@ -261,6 +270,25 @@ void CRiskManager::SetDCALevels(double level1R, double level2R,
 }
 
 //+------------------------------------------------------------------+
+//| Set Lot Sizing Parameters                                        |
+//+------------------------------------------------------------------+
+void CRiskManager::SetLotSizingParams(double lotBase, double lotMax, 
+                                      double equityPerLotInc, double lotIncrement) {
+    m_lotBase = lotBase;
+    m_lotMax = lotMax;
+    m_equityPerLotInc = equityPerLotInc;
+    m_lotIncrement = lotIncrement;
+    
+    Print("═══════════════════════════════════════");
+    Print("📊 Lot Sizing Configuration:");
+    Print("   Base Lot: ", m_lotBase);
+    Print("   Max Lot: ", m_lotMax);
+    Print("   Equity per increment: $", m_equityPerLotInc);
+    Print("   Lot increment: ", m_lotIncrement);
+    Print("═══════════════════════════════════════");
+}
+
+//+------------------------------------------------------------------+
 //| Get current equity                                               |
 //+------------------------------------------------------------------+
 double CRiskManager::GetCurrentEquity() {
@@ -269,60 +297,72 @@ double CRiskManager::GetCurrentEquity() {
 
 //+------------------------------------------------------------------+
 //| Calculate lot size based on risk                                 |
+//| Formula: Lots = (Balance × Risk%) ÷ (SL_Pips × Value_Per_Pip)  |
 //+------------------------------------------------------------------+
 double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
-    // [CHANGE] Use equity instead of balance for more accuracy
+    // Get account values
     double equity = GetCurrentEquity();
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double baseValue = m_useEquityMDD ? equity : balance;
     
+    // Calculate risk amount in dollars
+    // VD: Balance $10,000 × 0.5% = $50 (chấp nhận thua $50/lần)
     double riskValue = baseValue * (riskPct / 100.0);
     
-    // Get tick value
+    // Get tick value for XAUUSD
     double tickValue = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
     double tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
     
     if(tickSize == 0 || slPoints == 0) return 0.01;
     
     // Calculate value per point per lot
+    // VD: XAUUSD → $0.10 per point per 0.01 lot
     double valuePerPointPerLot = tickValue * (_Point / tickSize);
     
-    // Calculate lots
-    double lots = riskValue / (slPoints * valuePerPointPerLot);
+    // Calculate lots based on: Risk $ ÷ (SL points × Value per point)
+    // VD: $50 ÷ (1000 points × $0.10) = $50 ÷ $100 = 0.5 lot
+    double lotsRaw = riskValue / (slPoints * valuePerPointPerLot);
+    double lots = NormalizeDouble(lotsRaw, 2);
     
-    // Normalize
-    lots = NormalizeDouble(lots, 2);
+    // [DEBUG] Log calculation để user hiểu rõ
+    Print("═══════════════════════════════════════");
+    Print("💰 LOT SIZING CALCULATION:");
+    Print("   Account: $", DoubleToString(baseValue, 2), 
+          " (", m_useEquityMDD ? "Equity" : "Balance", ")");
+    Print("   Risk per trade: ", riskPct, "%");
+    Print("   → Acceptable Loss: $", DoubleToString(riskValue, 2));
+    Print("   SL Distance: ", (int)slPoints, " points = ", DoubleToString(slPoints/10, 1), " pips");
+    Print("   Value per point/lot: $", DoubleToString(valuePerPointPerLot, 4));
+    Print("───────────────────────────────────────");
+    Print("   Formula: $", DoubleToString(riskValue, 2), " ÷ (", (int)slPoints, " pts × $", 
+          DoubleToString(valuePerPointPerLot, 4), ")");
+    Print("   Raw Lots: ", DoubleToString(lotsRaw, 4));
+    Print("   Normalized: ", lots);
     
-    // Apply min/max limits
+    // Apply broker min/max limits
     double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
     double maxLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MAX);
     
-    if(lots < minLot) lots = minLot;
-    if(lots > maxLot) lots = maxLot;
-    
-    // [NEW] Dynamic max lot based on equity
-    double effectiveMaxLot = m_maxLotPerSide;
-    if(m_useEquityBasedLot) {
-        double tickValuePerLot = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
-        double contractSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-        double currentPrice = (SymbolInfoDouble(m_symbol, SYMBOL_BID) + 
-                              SymbolInfoDouble(m_symbol, SYMBOL_ASK)) / 2.0;
-        
-        double maxExposure = equity * (m_maxLotPctEquity / 100.0);
-        // [FIX] Prevent divide by zero
-        double denominator = contractSize * currentPrice / 100.0;
-        if(denominator > 0) {
-            effectiveMaxLot = maxExposure / denominator; // Adjust for XAU
-            effectiveMaxLot = NormalizeDouble(effectiveMaxLot, 2);
-        } else {
-            effectiveMaxLot = m_maxLotPerSide; // Fallback to static
-        }
-        
-        // Use minimum of static and dynamic
-        effectiveMaxLot = MathMin(effectiveMaxLot, m_maxLotPerSide);
+    if(lots < minLot) {
+        Print("   ⬆️ Below MinLot: ", lots, " → ", minLot);
+        lots = minLot;
+    }
+    if(lots > maxLot) {
+        Print("   ⬇️ Above Broker MaxLot: ", lots, " → ", maxLot);
+        lots = maxLot;
     }
     
-    if(lots > effectiveMaxLot) lots = effectiveMaxLot;
+    // Apply dynamic MaxLotPerSide (based on equity growth)
+    Print("   Current MaxLotPerSide: ", m_maxLotPerSide, 
+          " (Base: ", m_lotBase, " + Growth)");
+    
+    if(lots > m_maxLotPerSide) {
+        Print("   ⚠️ CAPPED: ", lots, " → ", m_maxLotPerSide, " (MaxLotPerSide limit)");
+        lots = m_maxLotPerSide;
+    }
+    
+    Print("   ✅ FINAL LOTS: ", lots);
+    Print("═══════════════════════════════════════");
     
     return lots;
 }
@@ -375,19 +415,33 @@ void CRiskManager::ResetDailyTracking() {
 }
 
 //+------------------------------------------------------------------+
-//| Update dynamic MaxLotPerSide based on balance growth            |
+//| Update dynamic MaxLotPerSide based on EQUITY growth             |
 //+------------------------------------------------------------------+
 void CRiskManager::UpdateMaxLotPerSide() {
-    double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-    double balanceGrowth = currentBalance - m_initialBalance;
+    double currentEquity = GetCurrentEquity();
     
-    // Formula: MaxLot = Base + floor(BalanceGrowth / 1000) * 0.1
-    int increments = (int)MathFloor(balanceGrowth / 1000.0);
-    m_maxLotPerSide = m_maxLotBase + (increments * 0.1);
+    // [NEW] Calculate based on equity increments
+    // Formula: MaxLot = LotBase + floor(Equity / EquityPerLotInc) * LotIncrement
+    int increments = (int)MathFloor(currentEquity / m_equityPerLotInc);
+    m_maxLotPerSide = m_lotBase + (increments * m_lotIncrement);
+    
+    // Apply cap
+    if(m_maxLotPerSide > m_lotMax) {
+        m_maxLotPerSide = m_lotMax;
+    }
     
     // Ensure minimum
-    if(m_maxLotPerSide < m_maxLotBase) {
-        m_maxLotPerSide = m_maxLotBase;
+    if(m_maxLotPerSide < m_lotBase) {
+        m_maxLotPerSide = m_lotBase;
+    }
+    
+    // [DEBUG] Log when maxLot changes
+    static double lastMaxLot = 0;
+    if(m_maxLotPerSide != lastMaxLot) {
+        Print("📈 MaxLotPerSide updated: ", lastMaxLot, " → ", m_maxLotPerSide, 
+              " (Equity: $", DoubleToString(currentEquity, 2), 
+              ", Increments: ", increments, ")");
+        lastMaxLot = m_maxLotPerSide;
     }
 }
 
@@ -520,6 +574,14 @@ double CRiskManager::GetSideLots(int direction) {
 //| Track new position for DCA/BE management                         |
 //+------------------------------------------------------------------+
 void CRiskManager::TrackPosition(ulong ticket, double entry, double sl, double tp, double lots) {
+    // [FIX] Check if already tracking this position
+    for(int i = 0; i < ArraySize(m_positions); i++) {
+        if(m_positions[i].ticket == ticket) {
+            // Already tracked, skip
+            return;
+        }
+    }
+    
     int size = ArraySize(m_positions);
     ArrayResize(m_positions, size + 1);
     
@@ -533,6 +595,8 @@ void CRiskManager::TrackPosition(ulong ticket, double entry, double sl, double t
     m_positions[size].dca1Added = false;
     m_positions[size].dca2Added = false;
     m_positions[size].lastTrailR = 0.0;  // [NEW] Initialize trailing tracker
+    
+    Print("📊 Tracking position #", ticket, " | Lots: ", lots, " | SL: ", sl, " | TP: ", tp);
 }
 
 //+------------------------------------------------------------------+
@@ -602,6 +666,7 @@ bool CRiskManager::TrailSL(ulong ticket) {
     double currentSL = PositionGetDouble(POSITION_SL);
     double tp = PositionGetDouble(POSITION_TP);
     int posType = (int)PositionGetInteger(POSITION_TYPE);
+    int direction = (posType == POSITION_TYPE_BUY) ? 1 : -1;
     
     // Check if newSL is better than current
     bool shouldUpdate = false;
@@ -630,6 +695,45 @@ bool CRiskManager::TrailSL(ulong ticket) {
               " | New SL: ", newSL, 
               " | Moved: ", (int)pointsMoved, " pts",
               " | Profit: ", DoubleToString(profitR, 2), "R");
+        
+        // [FIX] Update ALL positions in same direction (including DCA) with same SL
+        for(int i = 0; i < PositionsTotal(); i++) {
+            ulong otherTicket = PositionGetTicket(i);
+            if(otherTicket == ticket) continue; // Skip original position
+            if(!PositionSelectByTicket(otherTicket)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != m_symbol) continue;
+            
+            int otherType = (int)PositionGetInteger(POSITION_TYPE);
+            if((direction == 1 && otherType == POSITION_TYPE_BUY) ||
+               (direction == -1 && otherType == POSITION_TYPE_SELL)) {
+                
+                double otherTP = PositionGetDouble(POSITION_TP);
+                double otherCurrentSL = PositionGetDouble(POSITION_SL);
+                
+                // Only update if new SL is better than current SL of DCA position
+                bool shouldUpdateDCA = false;
+                if(direction == 1 && newSL > otherCurrentSL) shouldUpdateDCA = true;
+                if(direction == -1 && newSL < otherCurrentSL) shouldUpdateDCA = true;
+                
+                if(shouldUpdateDCA) {
+                    MqlTradeRequest req2;
+                    MqlTradeResult res2;
+                    ZeroMemory(req2);
+                    ZeroMemory(res2);
+                    
+                    req2.action = TRADE_ACTION_SLTP;
+                    req2.position = otherTicket;
+                    req2.symbol = m_symbol;
+                    req2.sl = newSL; // Use same SL for all positions
+                    req2.tp = otherTP;
+                    
+                    if(OrderSend(req2, res2)) {
+                        Print("   📈 DCA position #", otherTicket, " SL also trailed to ", newSL);
+                    }
+                }
+            }
+        }
+        
         return true;
     }
     
@@ -733,6 +837,7 @@ bool CRiskManager::MoveSLToBE(ulong ticket) {
     double currentSL = PositionGetDouble(POSITION_SL);
     double tp = PositionGetDouble(POSITION_TP);
     int posType = (int)PositionGetInteger(POSITION_TYPE);
+    int direction = (posType == POSITION_TYPE_BUY) ? 1 : -1;
     
     // Check if already at BE or better
     if(posType == POSITION_TYPE_BUY && currentSL >= openPrice) return true;
@@ -750,7 +855,39 @@ bool CRiskManager::MoveSLToBE(ulong ticket) {
     request.tp = tp;
     
     if(OrderSend(request, result)) {
-        Print("Position ", ticket, " moved to breakeven");
+        Print("✅ Position #", ticket, " moved to breakeven");
+        
+        // [FIX] Update ALL positions in same direction (including DCA)
+        for(int i = 0; i < PositionsTotal(); i++) {
+            ulong otherTicket = PositionGetTicket(i);
+            if(otherTicket == ticket) continue; // Skip original position
+            if(!PositionSelectByTicket(otherTicket)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != m_symbol) continue;
+            
+            int otherType = (int)PositionGetInteger(POSITION_TYPE);
+            if((direction == 1 && otherType == POSITION_TYPE_BUY) ||
+               (direction == -1 && otherType == POSITION_TYPE_SELL)) {
+                
+                double otherTP = PositionGetDouble(POSITION_TP);
+                double otherOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                
+                MqlTradeRequest req2;
+                MqlTradeResult res2;
+                ZeroMemory(req2);
+                ZeroMemory(res2);
+                
+                req2.action = TRADE_ACTION_SLTP;
+                req2.position = otherTicket;
+                req2.symbol = m_symbol;
+                req2.sl = NormalizeDouble(otherOpenPrice, _Digits); // Move to its own BE
+                req2.tp = otherTP;
+                
+                if(OrderSend(req2, res2)) {
+                    Print("   ✅ DCA position #", otherTicket, " also moved to BE");
+                }
+            }
+        }
+        
         return true;
     }
     
@@ -768,6 +905,29 @@ bool CRiskManager::AddDCAPosition(int direction, double lots, double currentPric
         return false;
     }
     
+    // [FIX] Get SL/TP from existing position in same direction
+    double sl = 0;
+    double tp = 0;
+    bool foundReference = false;
+    
+    for(int i = 0; i < PositionsTotal(); i++) {
+        if(PositionGetSymbol(i) == m_symbol) {
+            int posType = (int)PositionGetInteger(POSITION_TYPE);
+            if((direction == 1 && posType == POSITION_TYPE_BUY) ||
+               (direction == -1 && posType == POSITION_TYPE_SELL)) {
+                sl = PositionGetDouble(POSITION_SL);
+                tp = PositionGetDouble(POSITION_TP);
+                foundReference = true;
+                break;
+            }
+        }
+    }
+    
+    if(!foundReference) {
+        Print("❌ DCA failed: No reference position found");
+        return false;
+    }
+    
     MqlTradeRequest request;
     MqlTradeResult result;
     ZeroMemory(request);
@@ -779,6 +939,8 @@ bool CRiskManager::AddDCAPosition(int direction, double lots, double currentPric
     request.deviation = 20;
     request.magic = 20251013;
     request.comment = "DCA Add-on";
+    request.sl = sl;  // [FIX] Copy SL from original position
+    request.tp = tp;  // [FIX] Copy TP from original position
     
     if(direction == 1) {
         request.type = ORDER_TYPE_BUY;
@@ -789,7 +951,8 @@ bool CRiskManager::AddDCAPosition(int direction, double lots, double currentPric
     }
     
     if(OrderSend(request, result)) {
-        // Success - caller will log
+        // Success - log details
+        Print("✅ DCA position opened: ", lots, " lots | SL: ", sl, " | TP: ", tp);
         return true;
     }
     

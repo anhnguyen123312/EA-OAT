@@ -8,6 +8,7 @@
 
 // Include detectors for struct definitions (BOSSignal, SweepSignal, OrderBlock, FVGSignal)
 #include <detectors.mqh>
+#include <stats_manager.mqh>
 
 // Forward declarations for classes
 class CRiskManager;
@@ -35,7 +36,7 @@ public:
     void DrawLabel(string text, int x, int y, color clr, string tag);
     void UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecutor *executor, 
                          CDetector *detector, BOSSignal &lastBOS, SweepSignal &lastSweep, 
-                         OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore);
+                         OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore, CStatsManager *stats);
     
 private:
     string GenerateObjectName(string type);
@@ -259,7 +260,7 @@ void CDrawDebug::DrawLabel(string text, int x, int y, color clr, string tag) {
 //+------------------------------------------------------------------+
 void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecutor *executor, 
                                  CDetector *detector, BOSSignal &lastBOS, SweepSignal &lastSweep, 
-                                 OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore) {
+                                 OrderBlock &lastOB, FVGSignal &lastFVG, double lastScore, CStatsManager *stats) {
     // Create title bar - Dark blue for attention
     string titleBarName = m_prefix + "Dashboard_Title";
     ObjectDelete(0, titleBarName);
@@ -267,9 +268,9 @@ void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecu
     if(ObjectCreate(0, titleBarName, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
         ObjectSetInteger(0, titleBarName, OBJPROP_XDISTANCE, 10);
         ObjectSetInteger(0, titleBarName, OBJPROP_YDISTANCE, 20);
-        ObjectSetInteger(0, titleBarName, OBJPROP_XSIZE, 450);
-        ObjectSetInteger(0, titleBarName, OBJPROP_YSIZE, 35);
-        ObjectSetInteger(0, titleBarName, OBJPROP_BGCOLOR, C'0,70,140');  // Dark blue
+        ObjectSetInteger(0, titleBarName, OBJPROP_XSIZE, 520);  // Wider for more info
+        ObjectSetInteger(0, titleBarName, OBJPROP_YSIZE, 40);
+        ObjectSetInteger(0, titleBarName, OBJPROP_BGCOLOR, C'0,40,100');  // Dark blue
         ObjectSetInteger(0, titleBarName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
         ObjectSetInteger(0, titleBarName, OBJPROP_COLOR, clrWhite);
         ObjectSetInteger(0, titleBarName, OBJPROP_WIDTH, 1);
@@ -283,30 +284,30 @@ void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecu
     ObjectDelete(0, titleTextName);
     
     if(ObjectCreate(0, titleTextName, OBJ_LABEL, 0, 0, 0)) {
-        ObjectSetInteger(0, titleTextName, OBJPROP_XDISTANCE, 20);
-        ObjectSetInteger(0, titleTextName, OBJPROP_YDISTANCE, 27);
+        ObjectSetInteger(0, titleTextName, OBJPROP_XDISTANCE, 25);
+        ObjectSetInteger(0, titleTextName, OBJPROP_YDISTANCE, 30);
         ObjectSetInteger(0, titleTextName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-        ObjectSetString(0, titleTextName, OBJPROP_TEXT, "[ SMC/ICT EA DASHBOARD v4.1 ]");
+        ObjectSetString(0, titleTextName, OBJPROP_TEXT, "╔═══ SMC/ICT EA v1.2 - DASHBOARD ═══╗");
         ObjectSetInteger(0, titleTextName, OBJPROP_COLOR, clrWhite);
-        ObjectSetInteger(0, titleTextName, OBJPROP_FONTSIZE, 11);
-        ObjectSetString(0, titleTextName, OBJPROP_FONT, "Arial Bold");
+        ObjectSetInteger(0, titleTextName, OBJPROP_FONTSIZE, 12);
+        ObjectSetString(0, titleTextName, OBJPROP_FONT, "Consolas");
         ObjectSetInteger(0, titleTextName, OBJPROP_SELECTABLE, false);
         ObjectSetInteger(0, titleTextName, OBJPROP_BACK, false);
     }
     
-    // Create background panel - Light gray for better visibility
+    // Create background panel - Light color for better visibility
     string bgName = m_prefix + "Dashboard_BG";
     ObjectDelete(0, bgName);
     
     if(ObjectCreate(0, bgName, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
         ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, 10);
-        ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, 55);
-        ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 450);
-        ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 565);
-        ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, C'240,240,240');  // Light gray
+        ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, 60);
+        ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 520);  // Wider
+        ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 700);  // Taller for stats
+        ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, C'250,250,250');  // Very light gray - almost white
         ObjectSetInteger(0, bgName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-        ObjectSetInteger(0, bgName, OBJPROP_COLOR, clrBlack);
-        ObjectSetInteger(0, bgName, OBJPROP_WIDTH, 2);  // Thicker border
+        ObjectSetInteger(0, bgName, OBJPROP_COLOR, C'0,40,100');  // Dark blue border
+        ObjectSetInteger(0, bgName, OBJPROP_WIDTH, 3);  // Thick border
         ObjectSetInteger(0, bgName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
         ObjectSetInteger(0, bgName, OBJPROP_BACK, true);
         ObjectSetInteger(0, bgName, OBJPROP_SELECTABLE, false);
@@ -435,29 +436,91 @@ void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr, CExecu
     dashboard += StringFormat("│ └─ SHORT: %d orders | %.2f lots            │\n", shortPos, shortLots);
     
     // Risk Limits
-    dashboard += "├─────────────────────────────────────────────┤\n";
-    dashboard += "│ BASKET LIMITS:                              │\n";
-    dashboard += StringFormat("│ ├─ TP: +%.2f%% | Current: %+.2f%%         │\n", 0.3, floatingPct);
-    dashboard += StringFormat("│ ├─ SL: -%.2f%% | Daily: %.2f%%           │\n", 1.2, dailyPL);
-    dashboard += StringFormat("│ └─ Daily Limit: -%.1f%% | Today: %.2f%%   │\n", 8.0, dailyPL);
+    dashboard += "├─────────────────────────────────────────────────────┤\n";
+    dashboard += "│ BASKET LIMITS:                                      │\n";
+    dashboard += StringFormat("│ ├─ TP: +%.2f%% | Current: %+.2f%%              │\n", 0.3, floatingPct);
+    dashboard += StringFormat("│ ├─ SL: -%.2f%% | Daily: %.2f%%                │\n", 1.2, dailyPL);
+    dashboard += StringFormat("│ └─ Daily Limit: -%.1f%% | Today: %.2f%%        │\n", 8.0, dailyPL);
     
-    dashboard += "└─────────────────────────────────────────────┘";
+    // [NEW] PERFORMANCE STATS BY PATTERN
+    if(stats != NULL) {
+        PatternStats overall = stats.GetOverallStats();
+        
+        dashboard += "├─────────────────────────────────────────────────────┤\n";
+        dashboard += "│ ╔═══════════ PERFORMANCE STATS ═══════════╗         │\n";
+        dashboard += StringFormat("│ ║ Total: %3d | Win: %3d | Loss: %3d       ║         │\n", 
+                                  overall.totalTrades, overall.wins, overall.losses);
+        dashboard += StringFormat("│ ║ Win Rate: %5.1f%% | PF: %.2f             ║         │\n", 
+                                  overall.winRate, overall.profitFactor);
+        dashboard += StringFormat("│ ║ Total Profit: $%9.2f                ║         │\n", 
+                                  overall.totalProfit);
+        dashboard += "│ ╚═════════════════════════════════════════╝         │\n";
+        
+        dashboard += "├─────────────────────────────────────────────────────┤\n";
+        dashboard += "│ 📊 WIN/LOSS BY PATTERN:                             │\n";
+        
+        // BOS + OB
+        PatternStats bosOB = stats.GetPatternStats(PATTERN_BOS_OB);
+        if(bosOB.totalTrades > 0) {
+            dashboard += StringFormat("│ ├─ BOS+OB:    %2d trades | %2dW/%2dL | WR:%5.1f%% │\n", 
+                                      bosOB.totalTrades, bosOB.wins, bosOB.losses, bosOB.winRate);
+        }
+        
+        // BOS + FVG
+        PatternStats bosFVG = stats.GetPatternStats(PATTERN_BOS_FVG);
+        if(bosFVG.totalTrades > 0) {
+            dashboard += StringFormat("│ ├─ BOS+FVG:   %2d trades | %2dW/%2dL | WR:%5.1f%% │\n", 
+                                      bosFVG.totalTrades, bosFVG.wins, bosFVG.losses, bosFVG.winRate);
+        }
+        
+        // Sweep + OB
+        PatternStats sweepOB = stats.GetPatternStats(PATTERN_SWEEP_OB);
+        if(sweepOB.totalTrades > 0) {
+            dashboard += StringFormat("│ ├─ Sweep+OB:  %2d trades | %2dW/%2dL | WR:%5.1f%% │\n", 
+                                      sweepOB.totalTrades, sweepOB.wins, sweepOB.losses, sweepOB.winRate);
+        }
+        
+        // Sweep + FVG
+        PatternStats sweepFVG = stats.GetPatternStats(PATTERN_SWEEP_FVG);
+        if(sweepFVG.totalTrades > 0) {
+            dashboard += StringFormat("│ ├─ Sweep+FVG: %2d trades | %2dW/%2dL | WR:%5.1f%% │\n", 
+                                      sweepFVG.totalTrades, sweepFVG.wins, sweepFVG.losses, sweepFVG.winRate);
+        }
+        
+        // Momentum
+        PatternStats momo = stats.GetPatternStats(PATTERN_MOMO);
+        if(momo.totalTrades > 0) {
+            dashboard += StringFormat("│ ├─ Momentum:  %2d trades | %2dW/%2dL | WR:%5.1f%% │\n", 
+                                      momo.totalTrades, momo.wins, momo.losses, momo.winRate);
+        }
+        
+        // Confluence
+        PatternStats conf = stats.GetPatternStats(PATTERN_CONFLUENCE);
+        if(conf.totalTrades > 0) {
+            dashboard += StringFormat("│ └─ Confluence:%2d trades | %2dW/%2dL | WR:%5.1f%% │\n", 
+                                      conf.totalTrades, conf.wins, conf.losses, conf.winRate);
+        }
+    }
     
-    // Draw dashboard text - LARGER & MORE VISIBLE
+    dashboard += "└─────────────────────────────────────────────────────┘";
+    
+    // Draw dashboard text - CHỮ ĐẬM, SÁNG trên nền LIGHT
     string objName = m_prefix + "Dashboard";
     ObjectDelete(0, objName);
     
     if(ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0)) {
-        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 20);
-        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 65);  // Below title bar
+        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 25);
+        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 75);  // Below title bar
         ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
         ObjectSetString(0, objName, OBJPROP_TEXT, dashboard);
-        ObjectSetInteger(0, objName, OBJPROP_COLOR, clrBlack);  // Black text on light gray
-        ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 10);  // Larger font
-        ObjectSetString(0, objName, OBJPROP_FONT, "Consolas");  // Clearer font
+        ObjectSetInteger(0, objName, OBJPROP_COLOR, C'0,0,0');  // Pure black text - very visible
+        ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 10);  // Good size
+        ObjectSetString(0, objName, OBJPROP_FONT, "Consolas");  // Monospace for alignment
         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
         ObjectSetInteger(0, objName, OBJPROP_BACK, false);  // Foreground (on top)
         ObjectSetInteger(0, objName, OBJPROP_HIDDEN, false);
     }
+    
+    ChartRedraw();
 }
 

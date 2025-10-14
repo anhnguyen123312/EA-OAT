@@ -1,17 +1,18 @@
 //+------------------------------------------------------------------+
 //|                                                   SMC_ICT_EA.mq5 |
 //|                              SMC/ICT Trading System for XAUUSD   |
-//|                              Spec v1.0 - Full Implementation     |
+//|                              v1.2 - Dynamic Config & Trailing    |
 //+------------------------------------------------------------------+
 #property copyright "SMC/ICT EA"
 #property link      ""
-#property version   "1.00"
+#property version   "1.20"
 #property strict
 
 #include <detectors.mqh>
 #include <arbiter.mqh>
 #include <executor.mqh>
 #include <risk_manager.mqh>
+#include <stats_manager.mqh>
 #include <draw_debug.mqh>
 
 //+------------------------------------------------------------------+
@@ -34,11 +35,19 @@ input double   InpSpreadATRpct    = 0.08;                // Spread ATR% guard (d
 //| Input Parameters - Risk & DCA                                   |
 //+------------------------------------------------------------------+
 input group "======= Risk Management ======="
-input double   InpRiskPerTradePct = 0.25;    // Risk per trade (% equity) - M15 default
+input double   InpRiskPerTradePct = 0.5;     // Risk per trade (% equity/balance)
 input double   InpMinRR           = 2.0;     // Minimum R:R ratio
-input double   InpMaxLotBase      = 1.0;     // Base max lot (grows with balance)
-input int      InpMaxDcaAddons    = 2;       // Max DCA add-ons
 input double   InpDailyMddMax     = 8.0;     // Daily MDD limit (%)
+input int      InpMaxDcaAddons    = 2;       // Max DCA add-ons
+
+//+------------------------------------------------------------------+
+//| Input Parameters - Dynamic Lot Sizing (NEW)                     |
+//+------------------------------------------------------------------+
+input group "═══════ Lot Sizing ═══════"
+input double   InpLotBase         = 0.1;     // Base lot size (starting)
+input double   InpLotMax          = 5.0;     // Max lot size (cap)
+input double   InpEquityPerLotInc = 1000.0;  // Equity per lot increment ($)
+input double   InpLotIncrement    = 0.1;     // Lot increment per $1000 equity
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Basket Manager                               |
@@ -106,6 +115,15 @@ input int      InpMinStopPts      = 300;     // Min stop distance (points)
 input int      InpOrder_TTL_Bars  = 16;      // Pending order TTL (bars) - M15 4-8h
 
 //+------------------------------------------------------------------+
+//| [NEW] Input Parameters - Fixed SL Mode                          |
+//+------------------------------------------------------------------+
+input group "═══════ Fixed SL Mode ═══════"
+input bool     InpUseFixedSL      = false;   // Use fixed SL (override method)
+input int      InpFixedSL_Pips    = 100;     // Fixed SL in pips (if enabled)
+input bool     InpFixedTP_Enable  = false;   // Use fixed TP
+input int      InpFixedTP_Pips    = 200;     // Fixed TP in pips (if enabled)
+
+//+------------------------------------------------------------------+
 //| [NEW] Input Parameters - Feature Toggles                        |
 //+------------------------------------------------------------------+
 input group "═══════ Feature Toggles ═══════"
@@ -162,6 +180,7 @@ CDetector      *g_detector = NULL;
 CArbiter       *g_arbiter = NULL;
 CExecutor      *g_executor = NULL;
 CRiskManager   *g_riskMgr = NULL;
+CStatsManager  *g_stats = NULL;
 CDrawDebug     *g_drawer = NULL;
 
 // State tracking
@@ -177,6 +196,35 @@ int            g_totalTrades = 0;
 datetime       g_lastOrderTime = 0;  // Track last order placement time
 datetime       g_lastSkipLogTime = 0;  // Prevent skip log spam
 
+// [NEW] Helper function to determine pattern type
+int GetPatternType(const Candidate &c) {
+    // Confluence: BOS + Sweep + (OB or FVG)
+    if(c.hasBOS && c.hasSweep && (c.hasOB || c.hasFVG)) {
+        return PATTERN_CONFLUENCE;
+    }
+    // BOS + OB
+    if(c.hasBOS && c.hasOB && !c.hasFVG) {
+        return PATTERN_BOS_OB;
+    }
+    // BOS + FVG
+    if(c.hasBOS && c.hasFVG && !c.hasOB) {
+        return PATTERN_BOS_FVG;
+    }
+    // Sweep + OB
+    if(c.hasSweep && c.hasOB && !c.hasFVG) {
+        return PATTERN_SWEEP_OB;
+    }
+    // Sweep + FVG
+    if(c.hasSweep && c.hasFVG && !c.hasOB) {
+        return PATTERN_SWEEP_FVG;
+    }
+    // Momentum only
+    if(c.hasMomo && !c.hasBOS) {
+        return PATTERN_MOMO;
+    }
+    return PATTERN_OTHER;
+}
+
 //+------------------------------------------------------------------+
 //| Macros for unit conversion                                       |
 //+------------------------------------------------------------------+
@@ -189,13 +237,18 @@ datetime       g_lastSkipLogTime = 0;  // Prevent skip log spam
 //+------------------------------------------------------------------+
 int OnInit() {
     Print("═══════════════════════════════════════════════");
-    Print("  SMC/ICT EA v1.0 - Initialization");
+    Print("  SMC/ICT EA v1.2 - Initialization");
     Print("═══════════════════════════════════════════════");
     Print("Symbol: ", _Symbol);
     Print("Timeframe: ", EnumToString(_Period));
     Print("Risk per trade: ", InpRiskPerTradePct, "%");
     Print("Min R:R: ", InpMinRR);
     Print("Daily MDD limit: ", InpDailyMddMax, "%");
+    Print("───────────────────────────────────────────────");
+    Print("Lot Sizing: Base ", InpLotBase, " → Max ", InpLotMax);
+    Print("Scaling: +", InpLotIncrement, " lot per $", InpEquityPerLotInc, " equity");
+    Print("───────────────────────────────────────────────");
+    Print("Features: DCA=", InpEnableDCA, " | BE=", InpEnableBE, " | Trail=", InpEnableTrailing);
     Print("═══════════════════════════════════════════════");
     
     // Initialize components
@@ -218,13 +271,14 @@ int OnInit() {
     if(!g_executor.Init(_Symbol, _Period,
                         InpSessStartHour, InpSessEndHour, InpSpreadMaxPts, InpSpreadATRpct,
                         InpTriggerBodyATR, InpEntryBufferPts, InpMinStopPts, 
-                        InpOrder_TTL_Bars, InpMinRR)) {
+                        InpOrder_TTL_Bars, InpMinRR,
+                        InpUseFixedSL, InpFixedSL_Pips, InpFixedTP_Enable, InpFixedTP_Pips)) {
         Print("ERROR: Failed to initialize executor");
         return INIT_FAILED;
     }
     
     g_riskMgr = new CRiskManager();
-    if(!g_riskMgr.Init(_Symbol, InpRiskPerTradePct, InpMaxLotBase, InpMaxDcaAddons, InpDailyMddMax,
+    if(!g_riskMgr.Init(_Symbol, InpRiskPerTradePct, InpLotBase, InpMaxDcaAddons, InpDailyMddMax,
                        InpBasketTPPct, InpBasketSLPct, InpEndOfDayHour, InpDailyResetHour,
                        // [NEW] Add all new parameters
                        InpEnableDCA, InpEnableBE, InpEnableTrailing,
@@ -236,10 +290,17 @@ int OnInit() {
         return INIT_FAILED;
     }
     
+    // [NEW] Set dynamic lot sizing parameters
+    g_riskMgr.SetLotSizingParams(InpLotBase, InpLotMax, InpEquityPerLotInc, InpLotIncrement);
+    
     // [NEW] Set DCA levels after init
     g_riskMgr.SetDCALevels(InpDcaLevel1_R, InpDcaLevel2_R, 
                            InpDcaSize1_Mult, InpDcaSize2_Mult,
                            InpBeLevel_R);
+    
+    // [NEW] Initialize stats manager
+    g_stats = new CStatsManager();
+    g_stats.Init(_Symbol, 500);
     
     if(InpShowDebugDraw || InpShowDashboard) {
         g_drawer = new CDrawDebug();
@@ -273,6 +334,7 @@ void OnDeinit(const int reason) {
     if(g_arbiter != NULL) delete g_arbiter;
     if(g_executor != NULL) delete g_executor;
     if(g_riskMgr != NULL) delete g_riskMgr;
+    if(g_stats != NULL) delete g_stats;
     if(g_drawer != NULL) delete g_drawer;
     
     Print("Cleanup completed");
@@ -300,7 +362,7 @@ void OnTick() {
     if(!g_executor.SpreadOK()) {
         if(InpShowDashboard && g_drawer != NULL) {
             g_drawer.UpdateDashboard("SPREAD TOO WIDE", g_riskMgr, g_executor, g_detector,
-                                    g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, 0);
+                                    g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, 0, g_stats);
         }
         g_riskMgr.ManageOpenPositions();
         g_executor.ManagePendingOrders();
@@ -310,7 +372,7 @@ void OnTick() {
     if(g_riskMgr.IsTradingHalted()) {
         if(InpShowDashboard && g_drawer != NULL) {
             g_drawer.UpdateDashboard("TRADING HALTED - MDD", g_riskMgr, g_executor, g_detector,
-                                    g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, 0);
+                                    g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, 0, g_stats);
         }
         return;
     }
@@ -448,9 +510,14 @@ void OnTick() {
                             g_totalTrades++;
                             g_lastOrderTime = currentBarTime; // Mark this bar as having an order
                             
+                            // [NEW] Determine pattern type for stats
+                            int patternType = GetPatternType(g_lastCandidate);
+                            string patternName = g_stats.GetPatternName(patternType);
+                            
                             Print("═══════════════════════════════════════");
                             Print("TRADE #", g_totalTrades, " PLACED");
                             Print("Direction: ", g_lastCandidate.direction == 1 ? "BUY" : "SELL");
+                            Print("Pattern: ", patternName);
                             Print("Entry: ", entry);
                             Print("SL: ", sl);
                             Print("TP: ", tp);
@@ -463,6 +530,7 @@ void OnTick() {
                             
                             // Track position for DCA/BE management
                             // Note: Will be tracked when order fills
+                            // Pattern will be recorded in OnTrade when filled
                         }
                     } else {
                         // Log why we didn't place order (but only once per bar to avoid spam)
@@ -511,7 +579,7 @@ void OnTick() {
         double score = g_lastCandidate.valid ? g_lastCandidate.score : 0;
         
         g_drawer.UpdateDashboard(status, g_riskMgr, g_executor, g_detector,
-                                g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, score);
+                                g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, score, g_stats);
         
         // Cleanup old objects periodically
         if(newBar && g_totalTrades % 10 == 0) {
@@ -524,17 +592,52 @@ void OnTick() {
 //| Trade event handler                                              |
 //+------------------------------------------------------------------+
 void OnTrade() {
-    // Track filled positions for DCA management
+    // Check for new positions (filled orders)
     for(int i = 0; i < PositionsTotal(); i++) {
         ulong ticket = PositionGetTicket(i);
         if(PositionSelectByTicket(ticket)) {
             if(PositionGetString(POSITION_SYMBOL) == _Symbol) {
+                string comment = PositionGetString(POSITION_COMMENT);
+                
+                // [FIX] Skip DCA positions - they should NOT be tracked separately
+                if(StringFind(comment, "DCA Add-on") >= 0) {
+                    continue;
+                }
+                
                 double entry = PositionGetDouble(POSITION_PRICE_OPEN);
                 double sl = PositionGetDouble(POSITION_SL);
                 double tp = PositionGetDouble(POSITION_TP);
                 double lots = PositionGetDouble(POSITION_VOLUME);
                 
+                // TrackPosition() will check for duplicates internally
                 g_riskMgr.TrackPosition(ticket, entry, sl, tp, lots);
+                
+                // [NEW] Record in stats (determine pattern from last candidate)
+                int direction = (int)PositionGetInteger(POSITION_TYPE);
+                direction = (direction == POSITION_TYPE_BUY) ? 1 : -1;
+                int patternType = GetPatternType(g_lastCandidate);
+                g_stats.RecordTrade(ticket, direction, entry, lots, patternType, sl, tp);
+            }
+        }
+    }
+    
+    // [NEW] Check for closed positions and update stats
+    if(HistorySelect(TimeCurrent() - 86400, TimeCurrent())) {  // Last 24h
+        for(int i = HistoryDealsTotal() - 1; i >= 0; i--) {
+            ulong dealTicket = HistoryDealGetTicket(i);
+            if(dealTicket > 0) {
+                string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+                if(symbol == _Symbol) {
+                    long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+                    if(dealEntry == DEAL_ENTRY_OUT) {  // Position closed
+                        ulong posTicket = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+                        double closePrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+                        double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+                        
+                        // Update stats for this closed position
+                        g_stats.UpdateClosedTrade(posTicket, closePrice, profit);
+                    }
+                }
             }
         }
     }
