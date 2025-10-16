@@ -107,7 +107,7 @@ Chọn một trong 3 preset có sẵn:
 - ✅ Basket TP/SL cho toàn bộ vị thế
 
 ### 3. Bảo Vệ Vốn
-- ✅ Daily MDD Limit (Equity hoặc Balance)
+- ✅ Daily MDD Limit (Equity)
 - ✅ Dynamic Lot Sizing theo equity
 - ✅ Session & Spread Filter
 - ✅ Rollover Protection

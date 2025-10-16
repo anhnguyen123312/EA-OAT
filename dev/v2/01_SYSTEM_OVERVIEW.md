@@ -385,8 +385,8 @@ struct Candidate {
 4. RISK MANAGEMENT:
    → Track position #12345
    → At +1R (2651.60): Move to BE
-   → At +0.75R (2651.25): Add DCA #1 (0.075 lots)
-   → At +1.5R (2652.30): Add DCA #2 (0.05 lots)
+   → At +0.75R (2651.25): Add DCA #1 (0.05 % so với lệnh ban đầu)
+   → At +1.5R (2652.30): Add DCA #2 (0.05 % so với lệnh ban đầu)
    → Trailing: Start at +1R, step 0.5R
 
 5. ANALYTICS:
