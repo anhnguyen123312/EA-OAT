@@ -662,8 +662,760 @@ InpMomo_TTL        = 20     // TTL (bars)
 
 ---
 
+---
+
+## 🆕 v2.0 Updates: Adaptive Detection
+
+### 1. Sweep Proximity Calculation
+
+#### 🎯 Mục Đích
+Tính khoảng cách từ sweep level đến current price theo đơn vị ATR.
+
+#### ⚙️ Implementation
+```cpp
+struct SweepSignal {
+    // ... existing fields ...
+    
+    // NEW v2.0 field
+    double proximityATR;  // Distance to sweep / ATR
+};
+
+SweepSignal DetectSweep() {
+    // ... existing detection logic ...
+    
+    if(sweep.detected) {
+        // Calculate proximity in ATR units
+        double atr = GetATR();
+        double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) +
+                              SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+        double distance = MathAbs(currentPrice - sweep.level);
+        
+        sweep.proximityATR = distance / atr;
+        
+        Print("💧 Sweep proximity: ", 
+              DoubleToString(sweep.proximityATR, 2), " ATR");
+    }
+    
+    return sweep;
+}
+```
+
+#### 💡 Usage in Scoring
+```cpp
+// In Arbiter scoring:
+if(c.hasSweep && c.sweepProximityATR <= 0.5) {
+    score += 25;  // Close to sweep → High priority
+}
+```
+
+---
+
+### 2. OB & FVG State Tracking (Enhanced)
+
+#### 🎯 OB Freshness
+```cpp
+struct OrderBlock {
+    // ... existing fields ...
+    
+    // Enhanced tracking
+    int touches;        // Already tracked
+    bool isFresh;       // NEW: touches == 0
+    int barsAge;        // Bars since creation
+};
+
+OrderBlock FindOB(int direction) {
+    // ... existing logic ...
+    
+    // Mark as fresh if no touches
+    ob.isFresh = (ob.touches == 0);
+    
+    // Calculate age
+    datetime now = TimeCurrent();
+    ob.barsAge = iBarShift(_Symbol, _Period, ob.createdTime);
+    
+    return ob;
+}
+```
+
+#### 🎯 FVG Detailed States
+```cpp
+enum ENUM_FVG_STATE {
+    FVG_CLEAN = 0,        // 0% filled (fresh)
+    FVG_MITIGATED = 1,    // 35-85% filled
+    FVG_COMPLETED = 2     // >85% filled
+};
+
+struct FVGSignal {
+    // ... existing fields ...
+    
+    int stateDetailed;  // Use enum for clarity
+};
+```
+
+---
+
+### 3. Adaptive Thresholds (Future Enhancement)
+
+#### 🎯 Concept
+Adjust detection thresholds based on volatility regime.
+
+#### ⚙️ Pseudo Code
+```cpp
+void UpdateDetectionThresholds(ENUM_REGIME regime) {
+    double atr = GetATR();
+    
+    switch(regime) {
+        case REGIME_LOW:
+            // Looser thresholds (more signals)
+            m_minBreakPts = (int)(atr / _Point * 1.0);  // 1.0× ATR
+            m_fvg_MinPts = (int)(atr / _Point * 2.0);   // 2.0× ATR
+            m_minWickPct = 30.0;  // Lower requirement
+            break;
+            
+        case REGIME_MID:
+            // Default
+            m_minBreakPts = 70;
+            m_fvg_MinPts = 180;
+            m_minWickPct = 35.0;
+            break;
+            
+        case REGIME_HIGH:
+            // Stricter thresholds (fewer signals)
+            m_minBreakPts = (int)(atr / _Point * 1.5);  // 1.5× ATR
+            m_fvg_MinPts = (int)(atr / _Point * 3.0);   // 3.0× ATR
+            m_minWickPct = 40.0;  // Higher requirement
+            break;
+    }
+    
+    Print("📊 Detection thresholds updated for ", GetRegimeName(regime));
+}
+```
+
+#### 💡 Benefits
+```
+LOW Regime (smooth moves):
+  → More sensitive detection
+  → Catch smaller structures
+  → More trading opportunities
+
+HIGH Regime (choppy):
+  → Less sensitive detection
+  → Only significant structures
+  → Avoid false signals
+```
+
+---
+
+### 4. Reusing Invalidated OBs (Advanced)
+
+#### 🎯 Concept
+Convert invalidated OBs thành Mitigation Blocks (Breaker Blocks).
+
+#### ⚙️ Current Implementation
+```cpp
+// Already in code (v1.2)
+if(ob.valid) {
+    double buffer = m_ob_BufferInvPts * _Point;
+    if((direction == -1 && m_close[0] > ob.priceTop + buffer) ||
+       (direction == 1 && m_close[0] < ob.priceBottom - buffer)) {
+        // Convert to breaker block
+        ob.isBreaker = true;
+        ob.direction = -direction;  // Flip direction
+        // Keep valid for breaker use
+    }
+}
+```
+
+#### 💡 Enhancement for v2.0
+```cpp
+// Track breaker quality
+struct OrderBlock {
+    // ... existing ...
+    
+    bool isBreaker;        // Already exists
+    double breakStrength;  // NEW: How strong was break?
+    int touchesAsBreaker;  // NEW: Touches as breaker
+};
+
+// In scoring:
+if(c.hasOB && c.obIsBreaker && c.breakStrength > 1.5) {
+    score += 10;  // Strong breaker bonus
+} else if(c.hasOB && c.obIsBreaker) {
+    score -= 10;  // Weak breaker penalty (existing)
+}
+```
+
+---
+
+### 5. Multi-Timeframe FVG Confirmation
+
+#### 🎯 Concept
+Confirm M30 FVG với H1/H4 FVG để tăng reliability.
+
+#### ⚙️ Implementation
+```cpp
+bool CheckFVGMTFConfirmation(FVGSignal &fvg) {
+    // Get H1 or H4
+    ENUM_TIMEFRAMES htf = PERIOD_H1;
+    if(_Period == PERIOD_H1) htf = PERIOD_H4;
+    
+    double htfHigh[], htfLow[];
+    CopyHigh(_Symbol, htf, 0, 20, htfHigh);
+    CopyLow(_Symbol, htf, 0, 20, htfLow);
+    
+    // Check if HTF also has FVG in same zone
+    for(int i = 2; i < 20; i++) {
+        if(fvg.direction == 1) {
+            // Bullish FVG
+            double htfGap = htfLow[i] - htfHigh[i+2];
+            if(htfGap > 0 && 
+               htfHigh[i+2] <= fvg.priceTop && 
+               htfLow[i] >= fvg.priceBottom) {
+                fvg.mtfConfirmed = true;
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+```
+
+#### 💡 Usage
+```cpp
+// In Arbiter scoring:
+if(c.hasFVG && c.fvgMTFConfirmed) {
+    score += 15;  // HTF-confirmed FVG
+}
+```
+
+---
+
+## 📊 Summary: v1.2 vs v2.0 Detection
+
+| Feature | v1.2 | v2.0 |
+|---------|------|------|
+| **BOS** | Fixed thresholds | Same (adaptive in future) |
+| **Sweep** | Basic detection | + ProximityATR calculation |
+| **OB** | Touches, volume | + isFresh flag, + breaker strength |
+| **FVG** | State 0/1/2 | + MTF confirmation (optional) |
+| **Momentum** | Basic | Same |
+| **Thresholds** | Fixed points | Ready for ATR-scaling |
+
+---
+
+## 🔮 Proposed New Detectors
+
+### 1. MA Trend Detector 🟡 High Priority
+
+#### 🎯 Purpose
+Xác định xu hướng tổng thể bằng MA crossover để filter counter-trend trades.
+
+#### ⚙️ Implementation
+
+```cpp
+class CDetector {
+private:
+    int m_emaFastHandle;  // EMA 20
+    int m_emaSlowHandle;  // EMA 50
+    
+public:
+    bool Init(...) {
+        // ... existing code ...
+        
+        // [NEW] Create MA handles
+        m_emaFastHandle = iMA(m_symbol, m_timeframe, 20, 0, MODE_EMA, PRICE_CLOSE);
+        m_emaSlowHandle = iMA(m_symbol, m_timeframe, 50, 0, MODE_EMA, PRICE_CLOSE);
+        
+        if(m_emaFastHandle == INVALID_HANDLE || m_emaSlowHandle == INVALID_HANDLE) {
+            Print("❌ Failed to create MA handles");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Detect MA Trend
+    // ═══════════════════════════════════════════════════════
+    int DetectMATrend() {
+        double emaFast[], emaSlow[];
+        ArraySetAsSeries(emaFast, true);
+        ArraySetAsSeries(emaSlow, true);
+        
+        // Get MA values
+        if(CopyBuffer(m_emaFastHandle, 0, 0, 2, emaFast) <= 0 ||
+           CopyBuffer(m_emaSlowHandle, 0, 0, 2, emaSlow) <= 0) {
+            Print("⚠️ Failed to copy MA buffers");
+            return 0;
+        }
+        
+        // Current trend
+        if(emaFast[0] > emaSlow[0]) {
+            return 1;  // Bullish trend
+        } else if(emaFast[0] < emaSlow[0]) {
+            return -1; // Bearish trend
+        }
+        
+        return 0;  // Neutral/choppy
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Detect MA Crossover
+    // ═══════════════════════════════════════════════════════
+    bool IsMACrossover(int &direction) {
+        double emaFast[], emaSlow[];
+        ArraySetAsSeries(emaFast, true);
+        ArraySetAsSeries(emaSlow, true);
+        
+        if(CopyBuffer(m_emaFastHandle, 0, 0, 2, emaFast) <= 0 ||
+           CopyBuffer(m_emaSlowHandle, 0, 0, 2, emaSlow) <= 0) {
+            return false;
+        }
+        
+        // Bullish crossover (fast crosses above slow)
+        if(emaFast[0] > emaSlow[0] && emaFast[1] <= emaSlow[1]) {
+            direction = 1;
+            Print("✨ Bullish MA crossover detected");
+            return true;
+        }
+        
+        // Bearish crossover (fast crosses below slow)
+        if(emaFast[0] < emaSlow[0] && emaFast[1] >= emaSlow[1]) {
+            direction = -1;
+            Print("✨ Bearish MA crossover detected");
+            return true;
+        }
+        
+        return false;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Get MA Distance (for strength measurement)
+    // ═══════════════════════════════════════════════════════
+    double GetMADistance() {
+        double emaFast[], emaSlow[];
+        ArraySetAsSeries(emaFast, true);
+        ArraySetAsSeries(emaSlow, true);
+        
+        if(CopyBuffer(m_emaFastHandle, 0, 0, 1, emaFast) <= 0 ||
+           CopyBuffer(m_emaSlowHandle, 0, 0, 1, emaSlow) <= 0) {
+            return 0;
+        }
+        
+        // Return distance as % of price
+        double distance = MathAbs(emaFast[0] - emaSlow[0]);
+        double price = (emaFast[0] + emaSlow[0]) / 2.0;
+        
+        return (distance / price) * 100.0;  // Distance in %
+    }
+};
+```
+
+#### 📊 Usage in Arbiter
+
+```cpp
+Candidate BuildCandidate(...) {
+    // ... existing code ...
+    
+    // [NEW] Get MA trend
+    int maTrend = g_detector.DetectMATrend();
+    int crossDir = 0;
+    bool hasCross = g_detector.IsMACrossover(crossDir);
+    
+    c.maTrend = maTrend;
+    c.maCrossover = hasCross;
+    c.counterTrend = (maTrend != 0 && maTrend != c.direction);
+    
+    return c;
+}
+
+double ScoreCandidate(Candidate &c) {
+    double score = 0;
+    // ... existing scoring ...
+    
+    // [NEW] MA Trend Scoring
+    if(c.maTrend != 0) {
+        if(c.maTrend == c.direction) {
+            // WITH trend
+            score += 25;
+            Print("✨ MA trend aligned (+25)");
+            
+            if(c.maCrossover) {
+                // Fresh crossover = strong signal
+                score += 15;
+                Print("✨ MA crossover (+15)");
+            }
+            
+            // Check strength
+            double maDistance = g_detector.GetMADistance();
+            if(maDistance > 0.5) {  // Strong separation
+                score += 10;
+                Print("✨ Strong MA separation (+10)");
+            }
+            
+        } else {
+            // AGAINST trend
+            c.counterTrend = true;
+            score -= 40;
+            Print("⚠️ Counter MA trend (-40)");
+            
+            // Strict filter for counter-trend
+            if(score < InpMACounterMinScore) {
+                Print("❌ REJECT: Counter-trend score ", score,
+                      " < min ", InpMACounterMinScore);
+                return 0;
+            }
+        }
+    }
+    
+    return score;
+}
+```
+
+#### 💡 Parameters
+
+```cpp
+input group "═══════ MA Trend Filter ═══════"
+input bool   InpUseMAFilter        = true;   // Enable MA filter
+input int    InpMAFastPeriod       = 20;     // EMA fast period
+input int    InpMASlowPeriod       = 50;     // EMA slow period
+input int    InpMACounterMinScore  = 150;    // Min score for counter-trend
+input double InpMAStrongSeparation = 0.5;    // Strong separation threshold (%)
+```
+
+#### 📊 Expected Impact
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| **Counter-Trend Trades** | 30-40% | 10-15% | -60-70% |
+| **Counter-Trend Losses** | High | Low | -60% |
+| **Win Rate** | 65% | 68-70% | +3-5% |
+| **Trade Count** | 5/day | 4-5/day | -15-20% |
+
+---
+
+### 2. WAE (Waddah Attar Explosion) Detector 🟡 High Priority
+
+#### 🎯 Purpose
+Đo lường sức mạnh momentum và volume để confirm breakout thực sự (không phải breakout giả).
+
+#### 📝 About WAE
+
+**Waddah Attar Explosion** là indicator kết hợp:
+- **MACD** (momentum)
+- **Bollinger Bands** (volatility)  
+- **Volume** (participation)
+
+**Output**:
+- Histogram: Sức mạnh momentum
+- Signal line: Ngưỡng "explosion"
+- Color: Green (bullish) / Red (bearish)
+
+#### ⚙️ Implementation
+
+```cpp
+class CDetector {
+private:
+    int m_waeHandle;
+    
+public:
+    bool Init(...) {
+        // ... existing code ...
+        
+        // [NEW] Create WAE handle
+        m_waeHandle = iCustom(m_symbol, m_timeframe,
+                              "Market\\Waddah Attar Explosion",
+                              20,    // Sensitivity
+                              40,    // Fast MA
+                              200,   // Slow MA
+                              3.0,   // BB Deviation
+                              20);   // BB Period
+        
+        if(m_waeHandle == INVALID_HANDLE) {
+            Print("⚠️ WAE indicator not found - feature disabled");
+            m_waeHandle = -1;  // Mark as disabled
+        } else {
+            Print("✅ WAE indicator loaded");
+        }
+        
+        return true;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Check WAE Explosion
+    // ═══════════════════════════════════════════════════════
+    bool IsWAEExplosion(int direction, double &waeValue, int &waeDir) {
+        // Skip if WAE not available
+        if(m_waeHandle == -1) return true; // Don't block if disabled
+        
+        double waeMain[], waeSignal[];
+        ArraySetAsSeries(waeMain, true);
+        ArraySetAsSeries(waeSignal, true);
+        
+        // Buffer 0: Histogram (momentum strength)
+        // Buffer 1: Signal line (explosion threshold)
+        if(CopyBuffer(m_waeHandle, 0, 0, 2, waeMain) <= 0 ||
+           CopyBuffer(m_waeHandle, 1, 0, 2, waeSignal) <= 0) {
+            Print("⚠️ Failed to copy WAE buffers");
+            return false;
+        }
+        
+        waeValue = waeMain[0];
+        
+        // Determine WAE direction
+        waeDir = (waeMain[0] > 0) ? 1 : -1;
+        
+        // Check explosion conditions:
+        // 1. Histogram > Signal line (above threshold)
+        // 2. Histogram > User threshold
+        // 3. Direction matches trade direction
+        if(waeMain[0] > waeSignal[0] && 
+           MathAbs(waeMain[0]) > InpWAEThreshold) {
+            
+            if(waeDir == direction) {
+                Print("🔥 WAE explosion confirmed: ", 
+                      DoubleToString(waeValue, 2),
+                      " (threshold: ", InpWAEThreshold, ")");
+                return true;
+            } else {
+                Print("⚠️ WAE explosion opposite direction");
+                return false;
+            }
+        }
+        
+        // Not exploding
+        return false;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Get WAE Strength
+    // ═══════════════════════════════════════════════════════
+    double GetWAEStrength() {
+        if(m_waeHandle == -1) return 0;
+        
+        double waeMain[];
+        ArraySetAsSeries(waeMain, true);
+        
+        if(CopyBuffer(m_waeHandle, 0, 0, 1, waeMain) <= 0) {
+            return 0;
+        }
+        
+        return MathAbs(waeMain[0]);
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Check WAE Trend
+    // ═══════════════════════════════════════════════════════
+    bool IsWAETrending(int direction) {
+        if(m_waeHandle == -1) return true;
+        
+        double waeMain[];
+        ArraySetAsSeries(waeMain, true);
+        
+        if(CopyBuffer(m_waeHandle, 0, 0, 5, waeMain) <= 0) {
+            return false;
+        }
+        
+        // Check if last 3 bars are increasing
+        if(direction == 1) {
+            return (waeMain[0] > waeMain[1] && waeMain[1] > waeMain[2]);
+        } else {
+            return (waeMain[0] < waeMain[1] && waeMain[1] < waeMain[2]);
+        }
+    }
+};
+```
+
+#### 📊 Usage in Arbiter
+
+```cpp
+Candidate BuildCandidate(...) {
+    // ... existing code ...
+    
+    // [NEW] Check WAE
+    double waeValue = 0;
+    int waeDir = 0;
+    c.hasWAE = g_detector.IsWAEExplosion(c.direction, waeValue, waeDir);
+    c.waeValue = waeValue;
+    c.waeDirection = waeDir;
+    c.waeWeak = (MathAbs(waeValue) < InpWAEThreshold);
+    c.waeTrending = g_detector.IsWAETrending(c.direction);
+    
+    return c;
+}
+
+double ScoreCandidate(Candidate &c) {
+    double score = 0;
+    // ... existing scoring ...
+    
+    // [NEW] WAE Scoring
+    if(c.hasWAE) {
+        // Explosion confirmed
+        score += 20;
+        Print("✨ WAE explosion (+20)");
+        
+        // Very strong explosion
+        if(c.waeValue > InpWAEThreshold * 1.5) {
+            score += 10;
+            Print("✨ WAE very strong (+10)");
+        }
+        
+        // Trending momentum (3 bars increasing)
+        if(c.waeTrending) {
+            score += 5;
+            Print("✨ WAE trending (+5)");
+        }
+        
+    } else if(!c.waeWeak) {
+        // WAE exists but NOT exploding (weak breakout)
+        score -= 15;
+        Print("⚠️ Weak momentum (-15)");
+        
+        // Block if insufficient score
+        if(score < 120) {
+            Print("❌ REJECT: Weak WAE, score too low");
+            return 0;
+        }
+    }
+    
+    // [NEW] If WAE required, must have explosion
+    if(InpWAERequired && !c.hasWAE) {
+        Print("❌ REJECT: WAE explosion required but not present");
+        return 0;
+    }
+    
+    return score;
+}
+```
+
+#### 💡 Parameters
+
+```cpp
+input group "═══════ WAE Momentum Filter ═══════"
+input bool   InpUseWAE         = true;   // Enable WAE filter
+input double InpWAEThreshold   = 0.5;    // Explosion threshold
+input bool   InpWAERequired    = false;  // Require for ALL trades
+input int    InpWAESensitivity = 20;     // WAE sensitivity (lower = more sensitive)
+```
+
+#### 📊 Expected Impact
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| **Weak Breakouts** | 25-30% | 5-10% | -70-80% |
+| **False Signals** | High | Low | -60% |
+| **Win Rate** | 65% | 69-71% | +4-6% |
+| **Profit Factor** | 2.0 | 2.2-2.3 | +0.2-0.3 |
+| **Trade Count** | 5/day | 3-4/day | -25-30% |
+
+---
+
+### 3. Combined Usage Example
+
+```cpp
+void OnTick() {
+    // ... existing pre-checks ...
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 4: Run detectors (UPDATED)
+    // ═══════════════════════════════════════════════════════
+    
+    if(newBar || !g_lastBOS.valid) {
+        g_lastBOS = g_detector.DetectBOS();
+    }
+    
+    if(newBar || !g_lastSweep.valid) {
+        g_lastSweep = g_detector.DetectSweep();
+    }
+    
+    if(g_lastBOS.valid) {
+        g_lastOB = g_detector.FindOB(g_lastBOS.direction);
+        g_lastFVG = g_detector.FindFVG(g_lastBOS.direction);
+    }
+    
+    if(newBar) {
+        g_lastMomo = g_detector.DetectMomentum();
+    }
+    
+    // [NEW] Get MA trend
+    g_maTrend = g_detector.DetectMATrend();
+    int crossDir = 0;
+    g_maCrossover = g_detector.IsMACrossover(crossDir);
+    
+    // [NEW] Get WAE status (will be checked in BuildCandidate)
+    // No need to call here - done per candidate
+    
+    // ... continue with BuildCandidate ...
+}
+```
+
+---
+
+### 📊 Combined Impact Estimate
+
+| Feature | Win Rate Impact | Trade Count Impact | Complexity |
+|---------|----------------|-------------------|------------|
+| **MA Filter** | +3-5% | -15-20% | Low |
+| **WAE Momentum** | +4-6% | -25-30% | Medium |
+| **Combined** | **+7-11%** | **-35-45%** | Medium |
+
+**Expected Final Results** (with all 4 improvements):
+```
+Win Rate:       65% → 72-75%  (+7-10%)
+Profit Factor:  2.0 → 2.3-2.5 (+15-25%)
+Avg RR:         2.0 → 3.0-3.5 (+50-75%)
+Trades/Day:     5 → 3-4       (-30-40%)
+```
+
+---
+
+### 🛠️ Installation Notes
+
+#### WAE Indicator Setup
+
+1. **Download WAE Indicator**:
+   - Search "Waddah Attar Explosion MT5" on MQL5 Market
+   - Or get from: https://www.mql5.com/en/code/
+
+2. **Install**:
+   ```
+   Copy to: MQL5/Indicators/Market/
+   File name: Waddah Attar Explosion.ex5
+   ```
+
+3. **Verify**:
+   ```cpp
+   // In OnInit()
+   int waeHandle = iCustom(_Symbol, _Period, 
+                           "Market\\Waddah Attar Explosion");
+   if(waeHandle == INVALID_HANDLE) {
+       Print("WAE not found - check installation");
+   }
+   ```
+
+4. **Alternative**: If WAE not available, feature will auto-disable:
+   ```cpp
+   if(m_waeHandle == -1) {
+       Print("⚠️ WAE disabled - trading without WAE filter");
+       return true; // Don't block trading
+   }
+   ```
+
+---
+
+### 📚 Related Documentation
+
+- [10_IMPROVEMENTS_ROADMAP.md](10_IMPROVEMENTS_ROADMAP.md#21-thêm-ma-trend-filter) - MA Filter plan
+- [10_IMPROVEMENTS_ROADMAP.md](10_IMPROVEMENTS_ROADMAP.md#22-thêm-wae-momentum-confirmation) - WAE plan
+- [03_ARBITER.md](03_ARBITER.md#2-thiếu-ma-trend-filter) - MA scoring
+- [03_ARBITER.md](03_ARBITER.md#3-thiếu-wae-waddah-attar-explosion) - WAE scoring
+
+---
+
 ## 🎓 Đọc Tiếp
 
 - [03_ARBITER.md](03_ARBITER.md) - Cách kết hợp signals thành candidates
 - [09_EXAMPLES.md](09_EXAMPLES.md) - Ví dụ thực tế các setup
+- [10_IMPROVEMENTS_ROADMAP.md](10_IMPROVEMENTS_ROADMAP.md) - Full improvement roadmap
 

@@ -622,6 +622,479 @@ void TrackPosition(ulong ticket, double entry, double sl, double tp, double lots
 
 ---
 
+---
+
+## 🆕 v2.0 Updates: Risk Overlays & Adaptive Management
+
+### 1. Risk Overlays
+
+#### A. Max Trades Per Day
+
+```cpp
+static int g_todayTrades = 0;
+static datetime g_lastTradeDate = 0;
+
+bool CanOpenNewTrade() {
+    // Reset counter at new day
+    MqlDateTime dt;
+    TimeToStruct(TimeCurrent(), dt);
+    datetime currentDay = StringToTime(
+        StringFormat("%04d.%02d.%02d", dt.year, dt.mon, dt.day)
+    );
+    
+    if(currentDay != g_lastTradeDate) {
+        g_todayTrades = 0;
+        g_lastTradeDate = currentDay;
+        Print("📅 New day: Trades reset to 0");
+    }
+    
+    // Check limit
+    if(g_todayTrades >= InpMaxTradesPerDay) {
+        Print("⊘ Max trades/day reached: ", g_todayTrades, "/",
+              InpMaxTradesPerDay);
+        return false;
+    }
+    
+    return true;
+}
+
+void OnTradeOpened() {
+    g_todayTrades++;
+    Print("📊 Today's trades: ", g_todayTrades, "/", InpMaxTradesPerDay);
+}
+```
+
+#### B. Max Consecutive Loss + Cooldown
+
+```cpp
+static int g_consecLoss = 0;
+static datetime g_cooldownUntil = 0;
+
+void OnTradeClose(bool isWin, double profit) {
+    if(isWin) {
+        g_consecLoss = 0;
+        g_cooldownUntil = 0;
+        Print("✅ WIN - Streak reset");
+    } else {
+        g_consecLoss++;
+        Print("❌ LOSS #", g_consecLoss);
+        
+        if(g_consecLoss >= InpMaxConsecLoss) {
+            // Activate cooldown
+            g_cooldownUntil = TimeCurrent() + 
+                             InpCoolDownMinAfterLoss * 60;
+            
+            Print("═══════════════════════════════════════");
+            Print("🛑 MAX CONSECUTIVE LOSSES: ", g_consecLoss);
+            Print("🛑 COOLDOWN until: ", TimeToString(g_cooldownUntil));
+            Print("═══════════════════════════════════════");
+        }
+    }
+}
+
+bool CanOpenNewTrade() {
+    // ... max trades check ...
+    
+    // Check cooldown
+    if(g_cooldownUntil > 0 && TimeCurrent() < g_cooldownUntil) {
+        int remainMin = (int)((g_cooldownUntil - TimeCurrent()) / 60);
+        Print("⊘ In cooldown: ", remainMin, " min remaining");
+        return false;
+    }
+    
+    // Check consecutive losses
+    if(g_consecLoss >= InpMaxConsecLoss) {
+        Print("⊘ Max consecutive losses: ", g_consecLoss);
+        return false;
+    }
+    
+    return true;
+}
+```
+
+#### 📊 New Parameters
+```cpp
+input int InpMaxTradesPerDay     = 6;    // Max trades per day
+input int InpMaxConsecLoss       = 3;    // Max consecutive losses
+input int InpCoolDownMinAfterLoss= 60;   // Cooldown minutes
+```
+
+#### 💡 Ví Dụ: Cooldown Activation
+```
+Timeline:
+──────────────────────────────────────
+08:00 - Trade #1: LOSS -$150
+  consecLoss = 1
+
+10:00 - Trade #2: LOSS -$200
+  consecLoss = 2
+
+12:00 - Trade #3: LOSS -$180
+  consecLoss = 3
+  → MAX REACHED!
+  → cooldownUntil = 13:00 (12:00 + 60min)
+
+12:30 - New signal detected
+  CanOpenNewTrade()?
+  → In cooldown: 30min remaining
+  → BLOCKED ❌
+
+13:05 - New signal detected
+  CanOpenNewTrade()?
+  → Cooldown expired
+  → consecLoss still = 3
+  → BLOCKED ❌ (need a win to reset)
+
+14:00 - Manual trade (or wait for win)
+  Trade #4: WIN +$250
+  → consecLoss = 0
+  → cooldownUntil = 0
+  → RESUME TRADING ✅
+```
+
+---
+
+### 2. Adaptive DCA by Regime
+
+#### ⚙️ DCA Levels by Regime
+
+```cpp
+void SetDCAByRegime(ENUM_REGIME regime) {
+    switch(regime) {
+        case REGIME_LOW:
+            // Aggressive DCA (low volatility)
+            m_dcaLevel1_R = 0.75;
+            m_dcaLevel2_R = 1.50;
+            m_dcaSize1_Mult = 0.50;
+            m_dcaSize2_Mult = 0.33;
+            m_maxDcaAddons = 2;
+            Print("📊 DCA: LOW regime (aggressive)");
+            break;
+            
+        case REGIME_MID:
+            // Moderate DCA
+            m_dcaLevel1_R = 0.90;
+            m_dcaLevel2_R = 1.60;
+            m_dcaSize1_Mult = 0.45;
+            m_dcaSize2_Mult = 0.30;
+            m_maxDcaAddons = 2;
+            Print("📊 DCA: MID regime (moderate)");
+            break;
+            
+        case REGIME_HIGH:
+            // Conservative DCA (high volatility)
+            m_dcaLevel1_R = 1.00;
+            m_dcaLevel2_R = 0;      // Disable L2
+            m_dcaSize1_Mult = 0.33;
+            m_dcaSize2_Mult = 0;
+            m_maxDcaAddons = 1;
+            Print("📊 DCA: HIGH regime (conservative, L2 disabled)");
+            break;
+    }
+}
+```
+
+#### 📊 DCA Comparison
+
+|| LOW Regime | MID Regime | HIGH Regime |
+||------------|------------|-------------|
+|| **Level 1** | +0.75R | +0.90R | +1.00R |
+|| **Size 1** | 0.50× | 0.45× | 0.33× |
+|| **Level 2** | +1.50R | +1.60R | Disabled |
+|| **Size 2** | 0.33× | 0.30× | - |
+|| **Max Addons** | 2 | 2 | 1 |
+
+#### 💡 Rationale
+```
+LOW Volatility:
+  → Price moves smoother
+  → DCA earlier (+0.75R)
+  → Larger sizes (0.50×)
+  → 2 levels allowed
+
+HIGH Volatility:
+  → Price whipsaws more
+  → DCA later (+1.00R)
+  → Smaller sizes (0.33×)
+  → Only 1 level (L2 disabled)
+```
+
+---
+
+### 3. Adaptive Trailing by Regime
+
+#### ⚙️ Trailing Parameters by Regime
+
+```cpp
+void UpdateTrailingByRegime(ENUM_REGIME regime) {
+    // Start threshold
+    switch(regime) {
+        case REGIME_LOW:
+            m_trailStartR = 1.0;
+            m_trailStepR = 0.6;
+            m_trailATRMult = 2.0;
+            break;
+            
+        case REGIME_MID:
+            m_trailStartR = 1.2;
+            m_trailStepR = 0.5;
+            m_trailATRMult = 2.5;
+            break;
+            
+        case REGIME_HIGH:
+            m_trailStartR = 1.5;
+            m_trailStepR = 0.3;
+            m_trailATRMult = 3.0;
+            break;
+    }
+    
+    Print("📊 Trailing: Start ", m_trailStartR, "R | Step ",
+          m_trailStepR, "R | Distance ", m_trailATRMult, "× ATR");
+}
+```
+
+#### 📊 Trailing Comparison
+
+|| LOW | MID | HIGH |
+||-----|-----|------|
+|| **Start** | +1.0R | +1.2R | +1.5R |
+|| **Step** | 0.6R | 0.5R | 0.3R |
+|| **ATR Mult** | 2.0× | 2.5× | 3.0× |
+
+#### 💡 Ví Dụ
+
+```
+REGIME_LOW (ATR = 4.0):
+──────────────────────────────────────
+Entry: 2650.00
+Original SL: 2649.00 (1R = 100 pts)
+
+Timeline:
+  +1.0R (2651.00) → Start trailing
+    New SL = 2651.00 - (2.0 × 4.0) = 2650.92
+    
+  +1.6R (2651.60) → Trail again (+0.6R step)
+    New SL = 2651.60 - 8.0 = 2651.52
+    
+  +2.2R (2652.20) → Trail again (+0.6R step)
+    New SL = 2652.20 - 8.0 = 2652.12
+
+REGIME_HIGH (ATR = 9.0):
+──────────────────────────────────────
+Entry: 2650.00
+Original SL: 2649.00 (1R = 100 pts)
+
+Timeline:
+  +1.5R (2651.50) → Start trailing (later!)
+    New SL = 2651.50 - (3.0 × 9.0) = 2651.23
+    
+  +1.8R (2651.80) → Trail again (+0.3R step)
+    New SL = 2651.80 - 27.0 = 2651.53
+    
+  +2.1R (2652.10) → Trail again (+0.3R step)
+    New SL = 2652.10 - 27.0 = 2651.83
+
+→ HIGH regime: Wider distance, more frequent updates
+```
+
+---
+
+### 4. Implementation trong ManageOpenPositions()
+
+```cpp
+void ManageOpenPositions(ENUM_REGIME regime) {
+    // Update DCA/Trailing params by regime
+    SetDCAByRegime(regime);
+    UpdateTrailingByRegime(regime);
+    
+    // ... existing checks ...
+    
+    for(int i = ArraySize(positions) - 1; i >= 0; i--) {
+        ulong ticket = positions[i].ticket;
+        if(!PositionSelectByTicket(ticket)) {
+            ArrayRemove(positions, i, 1);
+            continue;
+        }
+        
+        double profitR = CalcProfitInR(ticket);
+        int direction = GetPositionDirection(ticket);
+        
+        // === TRAILING (regime-adaptive) ===
+        if(m_enableTrailing) {
+            if(profitR >= m_trailStartR) {  // Threshold by regime
+                if(profitR >= positions[i].lastTrailR + m_trailStepR) {
+                    if(TrailSL(ticket)) {
+                        positions[i].lastTrailR = profitR;
+                    }
+                }
+            }
+        }
+        
+        // === BREAKEVEN (unchanged) ===
+        if(m_enableBE && profitR >= m_beLevel_R && 
+           !positions[i].movedToBE) {
+            if(MoveSLToBE(ticket)) {
+                positions[i].movedToBE = true;
+            }
+        }
+        
+        // === DCA (regime-adaptive levels) ===
+        if(m_enableDCA) {
+            // DCA #1 (threshold by regime)
+            if(profitR >= m_dcaLevel1_R && !positions[i].dca1Added) {
+                if(CheckEquityHealth() && CheckDCAConfluence(direction)) {
+                    double addLots = positions[i].originalLot * m_dcaSize1_Mult;
+                    if(AddDCAPosition(direction, addLots)) {
+                        positions[i].dca1Added = true;
+                        positions[i].dcaCount++;
+                    }
+                }
+            }
+            
+            // DCA #2 (may be disabled in HIGH regime)
+            if(m_dcaLevel2_R > 0 &&  // Check if enabled
+               profitR >= m_dcaLevel2_R && !positions[i].dca2Added) {
+                if(CheckEquityHealth()) {
+                    double addLots = positions[i].originalLot * m_dcaSize2_Mult;
+                    if(AddDCAPosition(direction, addLots)) {
+                        positions[i].dca2Added = true;
+                        positions[i].dcaCount++;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+### 5. New Parameters
+
+```cpp
+// Risk Overlays
+input int InpMaxTradesPerDay     = 6;
+input int InpMaxConsecLoss       = 3;
+input int InpCoolDownMinAfterLoss= 60;
+
+// Adaptive DCA (will be set by regime, these are defaults)
+input double InpDcaLevel1_R_Low  = 0.75;
+input double InpDcaLevel1_R_Mid  = 0.90;
+input double InpDcaLevel1_R_High = 1.00;
+
+// Adaptive Trailing (will be set by regime)
+input double InpTrailStartR_Low  = 1.0;
+input double InpTrailStartR_Mid  = 1.2;
+input double InpTrailStartR_High = 1.5;
+
+input double InpTrailStepR_Low   = 0.6;
+input double InpTrailStepR_Mid   = 0.5;
+input double InpTrailStepR_High  = 0.3;
+```
+
+---
+
+### 6. Complete Scenario: Adaptive Risk Management
+
+```
+Scenario: Trade in HIGH regime
+──────────────────────────────────────
+
+1. REGIME DETECTION
+   ATR: 9.0 points
+   P70: 7.5
+   → REGIME_HIGH
+   
+   DCA Settings:
+     Level 1: +1.00R (0.33× size)
+     Level 2: DISABLED
+   
+   Trailing Settings:
+     Start: +1.5R
+     Step: 0.3R
+     Distance: 3.0× ATR = 27 points
+
+2. ENTRY
+   Entry: 2650.00
+   SL: 2638.30 (min stop 1.3× ATR = 11.7 pts)
+   Lots: 3.0
+   Risk: 1R = 117 points
+
+3. POSITION MANAGEMENT
+
+   T1: Price = 2651.17 (+117 pts = +1.0R)
+     DCA Level 1: 1.0R
+     profitR < 1.00R
+     → Skip DCA
+
+   T2: Price = 2651.40 (+140 pts = +1.20R)
+     profitR >= 1.00R
+     ✓ DCA #1 triggered!
+     Add: 3.0 × 0.33 = 1.0 lot
+     Total: 4.0 lots
+     
+   T3: Price = 2652.25 (+225 pts = +1.92R)
+     profitR >= 1.50R (trail start)
+     ✓ Trailing activated!
+     New SL = 2652.25 - 27 = 2651.98
+     
+   T4: Price = 2652.60 (+260 pts = +2.22R)
+     Check: 2.22 - 1.92 = 0.30R (>= step 0.3R)
+     ✓ Trail again!
+     New SL = 2652.60 - 27 = 2652.33
+
+Result:
+  → 1 DCA level only (L2 disabled in HIGH)
+  → Trailing started later (+1.5R vs +1.0R)
+  → More frequent trail updates (0.3R vs 0.5R)
+  → Wider trail distance (27 pts vs 10 pts)
+```
+
+---
+
+### 7. Benefits of Adaptive Management
+
+#### ✅ LOW Regime
+- Early DCA (+0.75R) → Maximize position in smooth trends
+- Larger DCA sizes → Bigger profits
+- Tighter trailing (2× ATR) → Lock profits faster
+
+#### ✅ MID Regime
+- Balanced approach
+- Standard settings
+- Most common regime
+
+#### ✅ HIGH Regime
+- Late DCA (+1.0R) → Only add when clearly winning
+- Single DCA only → Limit exposure
+- Wider trailing (3× ATR) → Avoid being stopped by noise
+- Later trail start (+1.5R) → Reduce whipsaw
+
+---
+
+### 8. Risk Overlay Decision Tree
+
+```
+New Signal Detected
+  │
+  ├─► TodayTrades >= MaxTradesPerDay?
+  │   YES → Block ❌
+  │   NO ↓
+  │
+  ├─► In Cooldown?
+  │   YES → Block ❌
+  │   NO ↓
+  │
+  ├─► ConsecLoss >= MaxConsecLoss?
+  │   YES → Block ❌
+  │   NO ↓
+  │
+  └─► CanOpenNewTrade = TRUE ✅
+      → Proceed with entry
+```
+
+---
+
 ## 🎓 Đọc Tiếp
 
 - [06_STATS_DASHBOARD.md](06_STATS_DASHBOARD.md) - Statistics & Dashboard

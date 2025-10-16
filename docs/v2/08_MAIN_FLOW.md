@@ -124,11 +124,18 @@ void OnTick() {
     // STEP 2: Pre-checks (critical filters)
     // ═══════════════════════════════════════════════════════
     
-    // 2.1 Check session
+    // 2.1 Check session (supports both FULL DAY and MULTI-WINDOW modes)
     if(!g_executor.SessionOpen()) {
-        // Still manage existing positions outside session
+        // ⚠️ CRITICAL: Still manage existing positions outside session!
+        // Reason: Position mở trong Window 1 có thể đóng trong Window 3
         g_riskMgr.ManageOpenPositions();
         g_executor.ManagePendingOrders();
+        
+        // Update dashboard to show session status
+        if(InpShowDashboard && g_drawer != NULL) {
+            string sessionInfo = g_executor.GetActiveWindow();
+            g_drawer.UpdateDashboard("OUTSIDE SESSION - " + sessionInfo, ...);
+        }
         return;
     }
     
@@ -622,6 +629,8 @@ START
 
 ### 📅 Daily Cycle
 
+#### Full Day Mode
+
 ```
 00:00 ─────────────────────────────────────────
        │ Avoid trading (Rollover time)
@@ -639,6 +648,12 @@ START
        │ └─ Place orders
        │
 12:00 ─┤
+       │ Continue trading (no break)
+       │
+16:00 ─┤
+       │ Continue trading
+       │
+20:00 ─┤
        │ Continue trading
        │
 23:00 ─┤
@@ -648,6 +663,68 @@ START
        │
 00:00 ─┘ (Next day)
 ```
+
+#### Multi-Window Mode
+
+```
+00:00 ─────────────────────────────────────────
+       │ Rollover (avoid trading)
+       │
+06:00 ─┤
+       │ Daily Reset:
+       │ - Reset startDayBalance
+       │ - Update MaxLotPerSide
+       │ - Resume trading if halted
+       │
+07:00 ─┤
+       │ ┌─────────────────────────────────────
+       │ │ WINDOW 1: ASIA SESSION
+       │ │ ├─ Start scanning
+       │ │ ├─ Detect signals
+       │ │ └─ Place orders
+       │ │
+11:00 ─┤ └───────────────────────────────────── Window 1 END
+       │ 
+       │ ⊘ BREAK PERIOD (11:00-12:00)
+       │ ├─ Stop scanning signals
+       │ ├─ No new orders
+       │ └─ Still manage existing positions ✅
+       │
+12:00 ─┤
+       │ ┌─────────────────────────────────────
+       │ │ WINDOW 2: LONDON SESSION
+       │ │ ├─ Resume scanning
+       │ │ ├─ Detect signals
+       │ │ └─ Place orders
+       │ │
+16:00 ─┤ └───────────────────────────────────── Window 2 END
+       │
+       │ ⊘ BREAK PERIOD (16:00-18:00)
+       │ ├─ Stop scanning signals
+       │ ├─ No new orders
+       │ └─ Still manage existing positions ✅
+       │
+18:00 ─┤
+       │ ┌─────────────────────────────────────
+       │ │ WINDOW 3: NY SESSION
+       │ │ ├─ Resume scanning
+       │ │ ├─ Detect signals
+       │ │ └─ Place orders
+       │ │
+23:00 ─┤ └───────────────────────────────────── Window 3 END
+       │
+       │ CLOSED (23:00-07:00)
+       │ ├─ Stop new entries
+       │ └─ Still manage existing positions ✅
+       │
+00:00 ─┘ (Next day)
+```
+
+**Key Difference**:
+- **Full Day**: Scan liên tục 16 hours
+- **Multi-Window**: Scan chỉ trong windows (13h total), có 2 break periods
+
+**Position Management**: Luôn chạy 24/7 trong cả 2 modes! ✅
 
 ### ⏱️ M15 Bar Cycle
 
@@ -707,8 +784,473 @@ BAR N Close
 
 ---
 
+---
+
+## 🆕 v2.0 Updates: Enhanced Main Flow
+
+### Updated OnTick() Flow
+
+```cpp
+void OnTick() {
+    // ═══════════════════════════════════════════════════════
+    // STEP 1: Check for new bar
+    // ═══════════════════════════════════════════════════════
+    datetime currentBarTime = iTime(_Symbol, _Period, 0);
+    bool newBar = (currentBarTime != g_lastBarTime);
+    if(newBar) g_lastBarTime = currentBarTime;
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 2: Pre-checks (UPDATED with News & Regime)
+    // ═══════════════════════════════════════════════════════
+    
+    if(!g_executor.SessionOpen()) {
+        g_riskMgr.ManageOpenPositions();
+        g_executor.ManagePendingOrders();
+        return;
+    }
+    
+    if(!g_executor.SpreadOK()) {
+        g_riskMgr.ManageOpenPositions();
+        g_executor.ManagePendingOrders();
+        return;
+    }
+    
+    if(g_riskMgr.IsTradingHalted()) return;
+    
+    if(g_executor.IsRolloverTime()) return;
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: News Embargo Check
+    // ═══════════════════════════════════════════════════════
+    if(g_newsFilter != NULL && 
+       g_newsFilter.IsWithinNewsWindow(TimeCurrent())) {
+        g_riskMgr.ManageOpenPositions();  // Still manage existing
+        g_executor.ManagePendingOrders();
+        
+        if(InpShowDashboard && g_drawer != NULL) {
+            g_drawer.UpdateDashboard("NEWS EMBARGO", ...);
+        }
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Detect Volatility Regime (once per bar)
+    // ═══════════════════════════════════════════════════════
+    static ENUM_REGIME g_currentRegime = REGIME_MID;
+    if(newBar && InpRegimeEnable && g_regime != NULL) {
+        g_currentRegime = g_regime.DetectRegime();
+        Print("📊 Regime: ", GetRegimeName(g_currentRegime),
+              " | ATR: ", DoubleToString(g_regime.GetCurrentATR(), 2));
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // NEW: Risk Overlay Checks
+    // ═══════════════════════════════════════════════════════
+    if(!g_riskMgr.CanOpenNewTrade()) {
+        g_riskMgr.ManageOpenPositions(g_currentRegime);
+        g_executor.ManagePendingOrders();
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 3: Update price series
+    // ═══════════════════════════════════════════════════════
+    g_detector.UpdateSeries();
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 4: Run detectors
+    // ═══════════════════════════════════════════════════════
+    if(newBar || !g_lastBOS.valid) {
+        g_lastBOS = g_detector.DetectBOS();
+        // ... visualization ...
+    }
+    
+    if(newBar || !g_lastSweep.valid) {
+        g_lastSweep = g_detector.DetectSweep();
+        
+        // NEW: Calculate sweep proximity in ATR
+        if(g_lastSweep.detected && g_currentRegime != NULL) {
+            double atr = g_regime.GetCurrentATR();
+            double distance = MathAbs(SymbolInfoDouble(_Symbol, SYMBOL_BID) -
+                                     g_lastSweep.level);
+            g_lastSweep.proximityATR = distance / atr;
+        }
+    }
+    
+    // ... other detectors ...
+    
+    // NEW: Get MTF bias & check HTF confluence
+    int mtfBias = g_detector.GetMTFBias();
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 5: Build & Score candidate (UPDATED)
+    // ═══════════════════════════════════════════════════════
+    g_lastCandidate = g_arbiter.BuildCandidate(g_lastBOS, g_lastSweep,
+                                               g_lastOB, g_lastFVG, 
+                                               g_lastMomo, mtfBias,
+                                               g_executor.SessionOpen(),
+                                               g_executor.SpreadOK());
+    
+    if(g_lastCandidate.valid) {
+        // NEW: Check HTF confluence
+        g_arbiter.CheckHTFConfluence(g_lastCandidate);
+        
+        // NEW: Extended scoring with regime & time
+        double score = g_arbiter.ScoreCandidateExtended(
+            g_lastCandidate,
+            g_currentRegime,
+            GetLocalHour(),
+            GetLocalMin()
+        );
+        
+        g_lastCandidate.score = score;
+        
+        // Check threshold
+        if(score >= InpScoreEnter) {
+            // ═══════════════════════════════════════════════
+            // STEP 6: Look for trigger (regime-adaptive)
+            // ═══════════════════════════════════════════════
+            double triggerHigh, triggerLow;
+            if(g_executor.GetTriggerCandle(g_lastCandidate.direction,
+                                          g_currentRegime,  // NEW
+                                          triggerHigh, triggerLow)) {
+                
+                // ═══════════════════════════════════════════
+                // STEP 7: Calculate entry (regime-adaptive)
+                // ═══════════════════════════════════════════
+                double entry, sl, tp, rr;
+                if(g_executor.CalculateEntry(g_lastCandidate,
+                                            g_currentRegime,  // NEW
+                                            triggerHigh, triggerLow,
+                                            entry, sl, tp, rr)) {
+                    
+                    // ... lot sizing ...
+                    // ... existing position checks ...
+                    
+                    if(g_executor.PlaceStopOrder(...)) {
+                        g_totalTrades++;
+                        g_riskMgr.OnTradeOpened();  // NEW: Update counter
+                        
+                        // ... logging ...
+                    }
+                }
+            }
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 8: Manage existing positions (regime-adaptive)
+    // ═══════════════════════════════════════════════════════
+    g_riskMgr.ManageOpenPositions(g_currentRegime);  // NEW: Pass regime
+    
+    // STEP 9: Manage pending orders
+    g_executor.ManagePendingOrders();
+    
+    // STEP 10: Update dashboard
+    if(InpShowDashboard && g_drawer != NULL) {
+        string status = DetermineStatus();  // ... logic ...
+        g_drawer.UpdateDashboard(status, g_riskMgr, g_executor,
+                                g_detector, g_lastBOS, g_lastSweep,
+                                g_lastOB, g_lastFVG, 
+                                g_lastCandidate.score,
+                                g_stats,
+                                g_currentRegime);  // NEW: Pass regime
+    }
+}
+```
+
+---
+
+### Updated OnTrade() Flow
+
+```cpp
+void OnTrade() {
+    // ═══════════════════════════════════════════════════════
+    // PART 1: Track new filled positions
+    // ═══════════════════════════════════════════════════════
+    for(int i = 0; i < PositionsTotal(); i++) {
+        ulong ticket = PositionGetTicket(i);
+        if(PositionSelectByTicket(ticket)) {
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol) {
+                string comment = PositionGetString(POSITION_COMMENT);
+                
+                if(StringFind(comment, "DCA Add-on") >= 0) {
+                    continue;  // Skip DCA tracking
+                }
+                
+                // ... get entry, sl, tp, lots ...
+                
+                g_riskMgr.TrackPosition(ticket, entry, sl, tp, lots);
+                
+                int direction = (int)PositionGetInteger(POSITION_TYPE);
+                direction = (direction == POSITION_TYPE_BUY) ? 1 : -1;
+                int patternType = GetPatternType(g_lastCandidate);
+                
+                // NEW: Record with regime context
+                g_stats.RecordTrade(ticket, direction, entry, lots,
+                                   patternType, sl, tp, g_currentRegime);
+            }
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // PART 2: Update stats for closed positions
+    // ═══════════════════════════════════════════════════════
+    if(HistorySelect(TimeCurrent() - 86400, TimeCurrent())) {
+        for(int i = HistoryDealsTotal() - 1; i >= 0; i--) {
+            ulong dealTicket = HistoryDealGetTicket(i);
+            if(dealTicket > 0) {
+                string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+                if(symbol == _Symbol) {
+                    long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+                    if(dealEntry == DEAL_ENTRY_OUT) {
+                        ulong posTicket = HistoryDealGetInteger(dealTicket, 
+                                                               DEAL_POSITION_ID);
+                        double closePrice = HistoryDealGetDouble(dealTicket, 
+                                                                 DEAL_PRICE);
+                        double profit = HistoryDealGetDouble(dealTicket, 
+                                                            DEAL_PROFIT);
+                        
+                        g_stats.UpdateClosedTrade(posTicket, closePrice, profit);
+                        
+                        // NEW: Update risk overlays (streak, cooldown)
+                        bool isWin = (profit > 0);
+                        g_riskMgr.OnTradeClose(isWin, profit);
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+### Updated Decision Tree (v2.0)
+
+```
+START
+  │
+  ├─► Session Open?
+  │   NO → ManagePositions & Return
+  │   YES ↓
+  │
+  ├─► Spread OK?
+  │   NO → ManagePositions & Return
+  │   YES ↓
+  │
+  ├─► Trading Halted (MDD)?
+  │   YES → Dashboard & Return
+  │   NO ↓
+  │
+  ├─► Rollover Time?
+  │   YES → Return
+  │   NO ↓
+  │
+  ├─► 🆕 News Window?
+  │   YES → ManagePositions & Return (skip new entries)
+  │   NO ↓
+  │
+  ├─► 🆕 Detect Regime (new bar)
+  │   → LOW/MID/HIGH
+  │   → Apply tuning
+  │
+  ├─► 🆕 Risk Overlays Check
+  │   ├─ MaxTradesPerDay reached?
+  │   ├─ In Cooldown?
+  │   └─ MaxConsecLoss reached?
+  │   ANY YES → ManagePositions & Return
+  │   ALL NO ↓
+  │
+  ├─► Detect Signals
+  │   ├─ BOS detected?
+  │   ├─ Sweep detected? → Calculate proximityATR
+  │   ├─ OB found?
+  │   ├─ FVG found?
+  │   └─ Momentum detected?
+  │
+  ├─► Build Candidate
+  │   Valid? NO → Return
+  │   YES ↓
+  │   → 🆕 Check HTF Confluence
+  │
+  ├─► 🆕 Score Candidate (Extended)
+  │   → Pass regime, localHour, localMin
+  │   Score >= 100? NO → Return
+  │   YES ↓
+  │
+  ├─► 🆕 Get Trigger Candle (regime-adaptive threshold)
+  │   Found? NO → Return
+  │   YES ↓
+  │
+  ├─► 🆕 Calculate Entry/SL/TP (ATR-scaled)
+  │   → Buffer, MinStop scaled by ATR & regime
+  │   RR >= MinRR? NO → Return
+  │   YES ↓
+  │
+  ├─► Calculate Lots
+  │   ↓
+  │
+  ├─► Check Limits
+  │   ↓
+  │
+  ├─► Check Existing
+  │   ↓
+  │
+  ├─► Place Order
+  │   → 🆕 Set TTL by regime
+  │   → 🆕 Increment todayTrades
+  │   ✅
+  │
+  └─► 🆕 Manage Positions (regime-adaptive DCA/Trail)
+```
+
+---
+
+### New State Machine (v2.0)
+
+```
+┌─────────────────────────────────────────────┐
+│  STATE 0: COOLDOWN                          │
+│  ├─ After 3 consecutive losses              │
+│  ├─ Wait X minutes                          │
+│  └─ Need a win to reset                     │
+└────────┬────────────────────────────────────┘
+         │ Cooldown expired + Win
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 1: NO POSITION (Enhanced)            │
+│  ├─ Check News Window                       │
+│  ├─ Detect Regime                           │
+│  ├─ Check MaxTrades/Day                     │
+│  └─ Scanning for signals                    │
+└────────┬────────────────────────────────────┘
+         │ Order Placed (regime-tuned)
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 2: PENDING ORDER                     │
+│  ├─ TTL by regime (10/16/24 bars)           │
+│  ├─ Cancel if expired                       │
+│  └─ Waiting for fill                        │
+└────────┬────────────────────────────────────┘
+         │ Order Filled
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 3: OPEN POSITION                     │
+│  ├─ Track with regime context               │
+│  ├─ Monitor profit in R                     │
+│  └─ Regime: MID                             │
+└────────┬────────────────────────────────────┘
+         │ Profit >= DcaLevel1 (by regime)
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 4: DCA LEVEL 1                       │
+│  ├─ Add DCA position (size by regime)       │
+│  ├─ LOW: +0.75R (0.50×)                     │
+│  ├─ MID: +0.90R (0.45×)                     │
+│  └─ HIGH: +1.00R (0.33×)                    │
+└────────┬────────────────────────────────────┘
+         │ Profit >= BeLevel (+1.0R)
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 5: BREAKEVEN                         │
+│  ├─ Move all SLs to entry                   │
+│  └─ Risk eliminated                         │
+└────────┬────────────────────────────────────┘
+         │ Profit >= TrailStart (by regime)
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 6: TRAILING (Regime-Adaptive)        │
+│  ├─ Start: LOW +1.0R / MID +1.2R / HIGH +1.5R│
+│  ├─ Step: LOW 0.6R / MID 0.5R / HIGH 0.3R   │
+│  ├─ Distance: LOW 2×ATR / MID 2.5× / HIGH 3×│
+│  └─ Lock profits progressively              │
+└────────┬────────────────────────────────────┘
+         │ TP Hit or SL Hit
+         ▼
+┌─────────────────────────────────────────────┐
+│  STATE 7: CLOSED                            │
+│  ├─ Calculate total profit                  │
+│  ├─ Update stats (pattern + regime)         │
+│  ├─ Update streak counter                   │
+│  └─ Check cooldown trigger                  │
+└────────┬────────────────────────────────────┘
+         │ If LOSS streak >=3 → STATE 0 (Cooldown)
+         │ Else → STATE 1 (No Position)
+         └───────────────────────────────────────►
+```
+
+---
+
+### Updated Daily Cycle (v2.0)
+
+```
+00:00 ─────────────────────────────────────────
+       │ Rollover (avoid trading)
+       │
+06:00 ─┤
+       │ Daily Reset:
+       │ - Reset startDayBalance
+       │ - Update MaxLotPerSide
+       │ - 🆕 Reset todayTrades = 0
+       │ - 🆕 Reset consecLoss = 0
+       │ - Resume trading if halted
+       │
+07:00 ─┤
+       │ SESSION START (GMT+7)
+       │ ├─ 🆕 Check News Calendar
+       │ ├─ 🆕 Detect Regime
+       │ ├─ 🆕 Check Risk Overlays
+       │ └─ Start scanning
+       │
+13:00 ─┤
+       │ 🆕 LONDON WINDOW (+10 score bonus)
+       │ ├─ High quality setups
+       │ └─ Increased TTL (+4 bars)
+       │
+17:00 ─┤
+       │ London window ends
+       │
+19:30 ─┤
+       │ 🆕 NY OVERLAP (+8 score bonus)
+       │ ├─ Maximum volatility
+       │ └─ Best trending setups
+       │
+22:30 ─┤
+       │ NY window ends
+       │
+23:00 ─┤
+       │ SESSION END (GMT+7)
+       │ ├─ Stop new entries
+       │ └─ Still manage existing
+       │
+00:00 ─┘ (Next day)
+```
+
+---
+
+### Comparison: v1.2 vs v2.0 Flow
+
+| Step | v1.2 | v2.0 |
+|------|------|------|
+| **Pre-checks** | Session, Spread, MDD, Rollover | + News Window |
+| **Regime** | None | Detect LOW/MID/HIGH (new bar) |
+| **Risk Checks** | Only MDD | + MaxTrades/Day, Cooldown, ConsecLoss |
+| **Sweep** | Basic detection | + ProximityATR calculation |
+| **Scoring** | Basic (100-200) | Extended (with regime, time, HTF) |
+| **Trigger** | Fixed 0.30 ATR | Regime-based (0.25/0.30/0.35) |
+| **Entry Calc** | Fixed buffers/stops | ATR-scaled by regime |
+| **TTL** | Fixed 16 bars | Adaptive (10/16/24 + micro-window boost) |
+| **DCA** | Fixed levels | Regime-adaptive levels & sizes |
+| **Trailing** | Fixed params | Regime-adaptive start/step/distance |
+| **Stats** | Pattern only | Pattern + Regime + Session |
+
+---
+
 ## 🎓 Đọc Tiếp
 
 - [09_EXAMPLES.md](09_EXAMPLES.md) - Real trade flow examples
 - [05_RISK_MANAGER.md](05_RISK_MANAGER.md) - ManagePositions() details
+- [MULTI_SESSION_TRADING.md](MULTI_SESSION_TRADING.md) - Multi-session mode guide
+- [TIMEZONE_CONVERSION.md](TIMEZONE_CONVERSION.md) - Timezone conversion details
 

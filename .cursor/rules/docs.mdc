@@ -8,3 +8,4 @@ alwaysApply: true
 
 ### Hành động 
 - Có nhiều file tại liệu sau khi viết bot hãy lược bỏ những nội dung dưa thừa không liên quan đến code hay logic code thì bỏ qua, những thứ liên quan đến logic bot hay thông tin về bot luôn phải ghi lại đầy đủ, ** Không dài dòng **
+- Cập nhật tài liệu mô tả không tạo file mới. làm giống git

@@ -55,17 +55,6 @@ public:
     CArbiter();
     ~CArbiter();
 
-
-
-
-
-    \\]\
-
-
-
-
-    
-    
     void Init(double minRR, int obMaxTouches);
     double ScoreCandidate(const Candidate &c);
     Candidate BuildCandidate(const BOSSignal &bos, const SweepSignal &sweep, 

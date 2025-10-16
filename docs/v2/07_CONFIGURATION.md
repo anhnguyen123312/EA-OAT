@@ -116,19 +116,74 @@ input int InpPointsPerPip = 10;  // 10 or 100 depending on broker
 
 ```cpp
 input string InpTZ            = "Asia/Ho_Chi_Minh";  // Timezone
-input int    InpSessStartHour = 7;                   // Start (VN time)
-input int    InpSessEndHour   = 23;                  // End (VN time)
 input int    InpSpreadMaxPts  = 500;                 // Max spread (pts)
 input double InpSpreadATRpct  = 0.08;                // Spread ATR% guard
 ```
 
+#### ⚙️ Session Mode Configuration (NEW)
+
+Bot hỗ trợ **2 chế độ giao dịch theo thời gian**:
+
+**Mode 1: FULL DAY** (Simple)
+```cpp
+enum TRADING_SESSION_MODE {
+    SESSION_FULL_DAY = 0,      // 7-23h continuous
+    SESSION_MULTI_WINDOW = 1   // 3 separate windows
+};
+
+input TRADING_SESSION_MODE InpSessionMode = SESSION_FULL_DAY;
+
+// Full Day Settings
+input int InpFullDayStart = 7;    // Start hour (GMT+7)
+input int InpFullDayEnd   = 23;   // End hour (GMT+7)
+```
+
+**Mode 2: MULTI-WINDOW** (Flexible)
+```cpp
+// Window 1: Asia Session
+input bool InpWindow1_Enable = true;   // Enable Window 1
+input int  InpWindow1_Start  = 7;      // Start hour (GMT+7)
+input int  InpWindow1_End    = 11;     // End hour (GMT+7)
+
+// Window 2: London Session
+input bool InpWindow2_Enable = true;   // Enable Window 2
+input int  InpWindow2_Start  = 12;     // Start hour (GMT+7)
+input int  InpWindow2_End    = 16;     // End hour (GMT+7)
+
+// Window 3: NY Session
+input bool InpWindow3_Enable = true;   // Enable Window 3
+input int  InpWindow3_Start  = 18;     // Start hour (GMT+7)
+input int  InpWindow3_End    = 23;     // End hour (GMT+7)
+```
+
 #### Giải Thích:
-- **InpTZ**: Timezone cho session timing
-- **InpSessStartHour/EndHour**: Trading hours (GMT+7)
+- **InpTZ**: Timezone reference (GMT+7)
+- **InpSessionMode**: Toggle giữa FULL DAY và MULTI-WINDOW
+- **InpFullDayStart/End**: Trading hours khi dùng Full Day mode
+- **InpWindow[X]_Enable**: Bật/tắt từng window riêng lẻ
+- **InpWindow[X]_Start/End**: Khung giờ cho mỗi window (GMT+7)
 - **InpSpreadMaxPts**: Static max spread
 - **InpSpreadATRpct**: Dynamic spread = max(500, 8% of ATR)
 
-#### Ví Dụ:
+#### 📊 Timeline So Sánh:
+
+**Full Day Mode**:
+```
+07:00 ══════════════════════════════════════════ 23:00
+      │──────────── 16 hours continuous ─────────│
+      └─ Trade liên tục, không có break ─────────┘
+```
+
+**Multi-Window Mode**:
+```
+07:00 ════ 11:00    12:00 ════ 16:00    18:00 ════════ 23:00
+      │ Win1 │ BREAK │ Win2 │ BREAK │      Win3       │
+      │ 4h   │  1h   │ 4h   │  2h   │       5h        │
+      └──────┴───────┴──────┴───────┴─────────────────┘
+      Total: 13 hours trading, 3 hours break
+```
+
+#### Ví Dụ Spread:
 ```
 ATR = 8.0 points
 Dynamic Max = max(500, 8.0/0.0001 × 0.08) = max(500, 640) = 640 pts
@@ -139,6 +194,48 @@ Current Spread = 450 pts
 Current Spread = 700 pts
 → Spread TOO WIDE ❌
 ```
+
+#### 💡 Preset Examples:
+
+**Preset 1: Full Coverage** (Default)
+```cpp
+InpSessionMode = SESSION_FULL_DAY;
+InpFullDayStart = 7;
+InpFullDayEnd = 23;
+
+Expected:
+  Coverage: 16h
+  Trades/Day: 5-6
+  Win Rate: 65%
+```
+
+**Preset 2: Quality Focus** (3 Windows)
+```cpp
+InpSessionMode = SESSION_MULTI_WINDOW;
+InpWindow1_Enable = true;   // Asia 7-11
+InpWindow2_Enable = true;   // London 12-16
+InpWindow3_Enable = true;   // NY 18-23
+
+Expected:
+  Coverage: 13h
+  Trades/Day: 4-5
+  Win Rate: 68-70%
+```
+
+**Preset 3: London + NY Only**
+```cpp
+InpSessionMode = SESSION_MULTI_WINDOW;
+InpWindow1_Enable = false;  // Skip Asia
+InpWindow2_Enable = true;   // London only
+InpWindow3_Enable = true;   // NY only
+
+Expected:
+  Coverage: 9h
+  Trades/Day: 3-4
+  Win Rate: 70-72%
+```
+
+**Chi tiết đầy đủ**: [MULTI_SESSION_TRADING.md](MULTI_SESSION_TRADING.md)
 
 ---
 
@@ -561,8 +658,462 @@ InpBasketSLPct = 0.8;  // Early basket SL
 
 ---
 
+---
+
+## 🆕 v2.0 New Parameters
+
+### 📌 News Filter
+
+```cpp
+input group "═══════ News Filter ═══════"
+input bool   InpEnableNewsFilter = true;
+input string InpNewsFilePath     = "news.csv";      // CSV file path
+input int    InpNewsBeforeMin    = 20;             // Block X min before
+input int    InpNewsAfterMin     = 20;             // Block X min after
+input string InpNewsImpactFilter = "HIGH_MED";     // HIGH, HIGH_MED, ALL
+```
+
+**Giải Thích**:
+- **InpEnableNewsFilter**: Bật/tắt news filter
+- **InpNewsFilePath**: Đường dẫn file CSV (trong MQL5/Files/)
+- **InpNewsBeforeMin**: Block entries X phút trước news
+- **InpNewsAfterMin**: Block entries X phút sau news
+- **InpNewsImpactFilter**: 
+  - `"HIGH"` - Chỉ filter HIGH impact
+  - `"HIGH_MED"` - Filter HIGH và MEDIUM
+  - `"ALL"` - Filter tất cả news
+
+**news.csv Format**:
+```csv
+timestamp,impact,currency,title
+2025-10-16 13:30:00,HIGH,USD,FOMC Interest Rate Decision
+2025-10-16 14:00:00,HIGH,USD,Fed Press Conference
+2025-10-17 08:30:00,MEDIUM,USD,Retail Sales
+```
+
+---
+
+### 📌 Volatility Regime
+
+```cpp
+input group "═══════ Volatility Regime ═══════"
+input bool InpRegimeEnable     = true;
+input int  InpATRPeriod        = 14;
+input int  InpATRDaysLookback  = 180;          // Days for percentile
+input int  InpRegimeLowPct     = 30;           // P30 threshold
+input int  InpRegimeHighPct    = 70;           // P70 threshold
+```
+
+**Giải Thích**:
+- **InpRegimeEnable**: Bật/tắt regime detection
+- **InpATRPeriod**: ATR period (14 recommended)
+- **InpATRDaysLookback**: Lookback window (180 days = ~6 months)
+- **InpRegimeLowPct**: Percentile cho LOW regime (30 = P30)
+- **InpRegimeHighPct**: Percentile cho HIGH regime (70 = P70)
+
+**Cơ Chế**:
+```
+ATR(14) hiện tại so với phân phối 180 ngày:
+  ATR <= P30 → REGIME_LOW
+  P30 < ATR < P70 → REGIME_MID
+  ATR >= P70 → REGIME_HIGH
+```
+
+---
+
+### 📌 ATR-Scaled Execution
+
+```cpp
+input group "═══════ ATR-Scaled Execution ═══════"
+input double InpEntryBufATRMult     = 0.12;    // Buffer as × ATR
+input double InpMinStopATRMult      = 1.0;     // Min stop as × ATR
+
+input double InpTriggerBodyATR_Low  = 0.25;    // LOW regime trigger
+input double InpTriggerBodyATR_Mid  = 0.30;    // MID regime trigger
+input double InpTriggerBodyATR_High = 0.35;    // HIGH regime trigger
+```
+
+**Giải Thích**:
+- Entry Buffer = ATR × `InpEntryBufATRMult`
+- Min Stop = ATR × `InpMinStopATRMult` (×1.3 trong HIGH regime)
+- Trigger thresholds tự động chọn theo regime
+
+**Ví Dụ**:
+```
+LOW Regime (ATR = 4.0):
+  Buffer: 4.0 × 0.12 = 0.48 points
+  MinStop: 4.0 × 1.0 = 4.0 points
+  Trigger: 4.0 × 0.25 = 1.0 point
+
+HIGH Regime (ATR = 9.0):
+  Buffer: 9.0 × 0.12 = 1.08 points
+  MinStop: 9.0 × 1.0 × 1.3 = 11.7 points
+  Trigger: 9.0 × 0.35 = 3.15 points
+```
+
+---
+
+### 📌 Extended Arbiter Scoring
+
+```cpp
+input group "═══════ Extended Scoring ═══════"
+input int InpScoreEnter      = 100;    // Min score to enter
+input int InpScoreCounterMin = 120;    // Min score for counter-trend
+```
+
+**Giải Thích**:
+- **InpScoreEnter**: Threshold tối thiểu để entry (mặc định 100)
+- **InpScoreCounterMin**: Threshold cao hơn cho counter-trend trades (120)
+
+**Rationale**:
+```
+Normal trend trade:
+  Score >= 100 → Enter
+
+Counter-trend trade:
+  Score >= 120 → Enter (stricter)
+  Score < 120 → Reject (too risky)
+```
+
+---
+
+### 📌 Risk Overlays
+
+```cpp
+input group "═══════ Risk Overlays ═══════"
+input int InpMaxTradesPerDay     = 6;      // Max trades per day
+input int InpMaxConsecLoss       = 3;      // Max consecutive losses
+input int InpCoolDownMinAfterLoss= 60;     // Cooldown minutes
+```
+
+**Giải Thích**:
+- **InpMaxTradesPerDay**: Giới hạn số lệnh mỗi ngày (reset 6h GMT+7)
+- **InpMaxConsecLoss**: Số loss liên tiếp trước khi cooldown
+- **InpCoolDownMinAfterLoss**: Thời gian nghỉ sau khi hit max loss streak
+
+**Ví Dụ**:
+```
+MaxConsecLoss = 3
+CoolDown = 60 min
+
+Scenario:
+  08:00 - LOSS #1
+  10:00 - LOSS #2
+  12:00 - LOSS #3 → COOLDOWN until 13:00
+  
+  12:30 - New signal → BLOCKED (in cooldown)
+  13:05 - New signal → BLOCKED (streak=3, need win)
+  14:00 - WIN → Reset streak, resume trading
+```
+
+---
+
+### 📌 Adaptive DCA Levels (by Regime)
+
+```cpp
+input group "═══════ Adaptive DCA ═══════"
+// LOW Regime
+input double InpDcaLevel1_R_Low  = 0.75;
+input double InpDcaSize1_Low     = 0.50;
+input double InpDcaLevel2_R_Low  = 1.50;
+input double InpDcaSize2_Low     = 0.33;
+
+// MID Regime
+input double InpDcaLevel1_R_Mid  = 0.90;
+input double InpDcaSize1_Mid     = 0.45;
+input double InpDcaLevel2_R_Mid  = 1.60;
+input double InpDcaSize2_Mid     = 0.30;
+
+// HIGH Regime
+input double InpDcaLevel1_R_High = 1.00;
+input double InpDcaSize1_High    = 0.33;
+input bool   InpDcaLevel2_HighVol= false;   // Disable L2 in HIGH
+```
+
+**Mapping Table**:
+
+|| LOW | MID | HIGH |
+||-----|-----|------|
+|| **L1 Trigger** | +0.75R | +0.90R | +1.00R |
+|| **L1 Size** | 0.50× | 0.45× | 0.33× |
+|| **L2 Trigger** | +1.50R | +1.60R | Disabled |
+|| **L2 Size** | 0.33× | 0.30× | - |
+
+---
+
+### 📌 Adaptive Trailing (by Regime)
+
+```cpp
+input group "═══════ Adaptive Trailing ═══════"
+// Start Thresholds
+input double InpTrailStartR_Low  = 1.0;
+input double InpTrailStartR_Mid  = 1.2;
+input double InpTrailStartR_High = 1.5;
+
+// Step Sizes
+input double InpTrailStepR_Low   = 0.6;
+input double InpTrailStepR_Mid   = 0.5;
+input double InpTrailStepR_High  = 0.3;
+
+// ATR Multipliers
+input double InpTrailATRMult_Low = 2.0;
+input double InpTrailATRMult_Mid = 2.5;
+input double InpTrailATRMult_High= 3.0;
+```
+
+**Mapping Table**:
+
+|| LOW | MID | HIGH |
+||-----|-----|------|
+|| **Start** | +1.0R | +1.2R | +1.5R |
+|| **Step** | 0.6R | 0.5R | 0.3R |
+|| **Distance** | 2.0× ATR | 2.5× ATR | 3.0× ATR |
+
+---
+
+## 6️⃣ v2.0 Configuration Presets
+
+### 🟢 Conservative (M30)
+```cpp
+// Risk
+InpRiskPerTradePct = 0.5;
+InpDailyMddMax = 5.0;
+InpMaxTradesPerDay = 4;
+InpMaxConsecLoss = 2;
+
+// News & Regime
+InpEnableNewsFilter = true;
+InpRegimeEnable = true;
+
+// Scoring
+InpScoreEnter = 110;  // Higher threshold
+InpScoreCounterMin = 140;
+
+// ATR-Scaled
+InpEntryBufATRMult = 0.15;  // Wider buffer
+InpMinStopATRMult = 1.2;    // Wider stop
+
+// DCA: Disabled in HIGH, conservative in others
+// Trailing: Later start, wider distance
+```
+
+### 🟡 Balanced (M30) - Recommended
+```cpp
+// Risk
+InpRiskPerTradePct = 0.4;
+InpDailyMddMax = 8.0;
+InpMaxTradesPerDay = 6;
+InpMaxConsecLoss = 3;
+InpCoolDownMinAfterLoss = 60;
+
+// News & Regime
+InpEnableNewsFilter = true;
+InpNewsImpactFilter = "HIGH_MED";
+InpRegimeEnable = true;
+InpATRDaysLookback = 180;
+
+// Scoring
+InpScoreEnter = 100;
+InpScoreCounterMin = 120;
+
+// ATR-Scaled
+InpEntryBufATRMult = 0.12;
+InpMinStopATRMult = 1.0;
+InpTriggerBodyATR_Low = 0.25;
+InpTriggerBodyATR_Mid = 0.30;
+InpTriggerBodyATR_High = 0.35;
+
+// DCA: Adaptive by regime
+InpDcaLevel1_R_Low = 0.75;
+InpDcaLevel1_R_Mid = 0.90;
+InpDcaLevel1_R_High = 1.00;
+InpDcaLevel2_HighVol = false;  // Disable L2 in HIGH
+
+// Trailing: Adaptive by regime
+InpTrailStartR_Low = 1.0;
+InpTrailStartR_Mid = 1.2;
+InpTrailStartR_High = 1.5;
+```
+
+### 🔴 Aggressive (M30)
+```cpp
+// Risk
+InpRiskPerTradePct = 0.6;
+InpDailyMddMax = 10.0;
+InpMaxTradesPerDay = 8;
+InpMaxConsecLoss = 4;
+InpCoolDownMinAfterLoss = 30;  // Shorter cooldown
+
+// News: Only HIGH impact
+InpEnableNewsFilter = true;
+InpNewsImpactFilter = "HIGH";  // Trade through MEDIUM news
+
+// Scoring
+InpScoreEnter = 90;  // Lower threshold (more trades)
+InpScoreCounterMin = 110;
+
+// ATR-Scaled
+InpEntryBufATRMult = 0.10;  // Tighter buffer
+InpMinStopATRMult = 0.9;    // Tighter stop
+
+// DCA: More aggressive
+InpDcaLevel1_R_Low = 0.50;  // Earlier
+InpDcaSize1_Low = 0.618;    // Larger (Fibonacci)
+InpDcaLevel2_HighVol = true;  // Enable L2 even in HIGH
+
+// Trailing: Earlier, tighter
+InpTrailStartR_Low = 0.75;
+InpTrailStepR_High = 0.25;  // More frequent
+```
+
+---
+
+## 7️⃣ Recommended Settings by Market
+
+### XAUUSD M30 (Primary Focus)
+```cpp
+// Base
+InpRiskPerTradePct = 0.4;
+InpMinRR = 2.0;
+InpDailyMddMax = 8.0;
+
+// News
+InpEnableNewsFilter = true;
+InpNewsImpactFilter = "HIGH_MED";
+InpNewsBeforeMin = 20;
+InpNewsAfterMin = 20;
+
+// Regime
+InpRegimeEnable = true;
+InpATRPeriod = 14;
+InpATRDaysLookback = 180;
+
+// Execution
+InpEntryBufATRMult = 0.12;
+InpMinStopATRMult = 1.0;
+InpTriggerBodyATR_Mid = 0.30;
+
+// Risk Overlays
+InpMaxTradesPerDay = 6;
+InpMaxConsecLoss = 3;
+InpCoolDownMinAfterLoss = 60;
+
+// Scoring
+InpScoreEnter = 100;
+InpScoreCounterMin = 120;
+```
+
+### XAUUSD M15 (More Trades)
+```cpp
+// Adjusted for faster timeframe
+InpATRDaysLookback = 120;  // Shorter history
+InpMaxTradesPerDay = 8;    // More opportunities
+InpOrder_TTL_Bars: 12/16/20 (by regime)
+InpScoreEnter = 105;       // Slightly stricter
+```
+
+---
+
+## 8️⃣ Parameter Tuning Guide
+
+### For Higher Win Rate
+```
+Increase:
+  - InpScoreEnter (100 → 110)
+  - InpScoreCounterMin (120 → 140)
+  - InpTriggerBodyATR_* (stricter triggers)
+  - InpNewsBeforeMin (20 → 30)
+
+Enable:
+  - InpEnableNewsFilter = true
+  - InpRegimeEnable = true
+
+Result:
+  + Fewer but higher quality trades
+  + Better win rate
+  - Fewer trading opportunities
+```
+
+### For More Profits (Risk Adjusted)
+```
+Optimize:
+  - InpDcaLevel1_R_Low = 0.60 (earlier DCA)
+  - InpDcaSize1_Low = 0.55 (larger DCA)
+  - InpTrailStepR_High = 0.25 (more frequent trailing)
+
+Result:
+  + Maximize winning trades
+  + Higher profit per trade
+  ~ Similar win rate
+```
+
+### For Lower Drawdown
+```
+Increase:
+  - InpMaxConsecLoss (3 → 2)
+  - InpCoolDownMinAfterLoss (60 → 120)
+  - InpMinStopATRMult (1.0 → 1.2)
+
+Decrease:
+  - InpMaxTradesPerDay (6 → 4)
+  - InpRiskPerTradePct (0.4 → 0.3)
+
+Result:
+  + Lower max drawdown
+  + Safer trading
+  - Lower total profits
+```
+
+---
+
+## 9️⃣ Optimization Workflow
+
+### Step 1: Baseline Test
+```
+Run v1.2 với default settings
+Record: WR, PF, MDD, Trades/Day
+```
+
+### Step 2: Enable News Filter
+```
+InpEnableNewsFilter = true
+Test và so sánh metrics
+Expected: WR +1-2%, Trades/Day -10-15%
+```
+
+### Step 3: Enable Regime
+```
+InpRegimeEnable = true
+Test với adaptive parameters
+Expected: WR +2-3%, MDD -10-20%
+```
+
+### Step 4: Fine-tune Scoring
+```
+Adjust:
+  - InpScoreEnter
+  - InpScoreCounterMin
+  - Trigger thresholds
+
+Test various combinations
+```
+
+### Step 5: Optimize Risk Overlays
+```
+Test different:
+  - MaxTradesPerDay (4-8)
+  - MaxConsecLoss (2-4)
+  - CoolDown (30-120 min)
+
+Find optimal balance
+```
+
+---
+
 ## 🎓 Đọc Tiếp
 
 - [01_SYSTEM_OVERVIEW.md](01_SYSTEM_OVERVIEW.md) - System overview
 - [09_EXAMPLES.md](09_EXAMPLES.md) - Real configuration examples
+- [MULTI_SESSION_TRADING.md](MULTI_SESSION_TRADING.md) - Multi-session guide chi tiết
+- [TIMEZONE_CONVERSION.md](TIMEZONE_CONVERSION.md) - Timezone conversion guide
 
