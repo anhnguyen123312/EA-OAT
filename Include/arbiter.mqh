@@ -36,7 +36,7 @@ struct Candidate {
     int      mtfBias;            // Multi-timeframe bias: +1=bullish, -1=bearish, 0=neutral
     int      sweepDistanceBars;  // Distance from sweep to current bar
     
-    // Entry details
+    // Entry details    
     double   entryPrice;
     double   slPrice;
     double   tpPrice;
@@ -54,6 +54,17 @@ private:
 public:
     CArbiter();
     ~CArbiter();
+
+
+
+
+
+    \\]\
+
+
+
+
+    
     
     void Init(double minRR, int obMaxTouches);
     double ScoreCandidate(const Candidate &c);

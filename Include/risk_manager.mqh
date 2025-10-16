@@ -72,7 +72,8 @@ private:
     struct PositionDCA {
         ulong    ticket;
         double   entryPrice;
-        double   sl;
+        double   sl;            // Current SL
+        double   originalSL;    // [NEW] ORIGINAL SL for R calculation (never changes)
         double   tp;
         double   originalLot;
         int      dcaCount;
@@ -298,71 +299,198 @@ double CRiskManager::GetCurrentEquity() {
 //+------------------------------------------------------------------+
 //| Calculate lot size based on risk                                 |
 //| Formula: Lots = (Balance × Risk%) ÷ (SL_Pips × Value_Per_Pip)  |
+//| [ENHANCED] Full diagnostic logging to debug lot = 0.01 issue    |
 //+------------------------------------------------------------------+
 double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
-    // Get account values
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1: Get account values
+    // ═══════════════════════════════════════════════════════════
     double equity = GetCurrentEquity();
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double baseValue = m_useEquityMDD ? equity : balance;
     
-    // Calculate risk amount in dollars
-    // VD: Balance $10,000 × 0.5% = $50 (chấp nhận thua $50/lần)
+    Print("═══════════════════════════════════════════════════════");
+    Print("🔍 ENHANCED LOT DIAGNOSTIC - START");
+    Print("═══════════════════════════════════════════════════════");
+    Print("STEP 1: ACCOUNT VALUES");
+    Print("   Equity: $", DoubleToString(equity, 2));
+    Print("   Balance: $", DoubleToString(balance, 2));
+    Print("   Using: ", m_useEquityMDD ? "Equity" : "Balance");
+    Print("   → BaseValue: $", DoubleToString(baseValue, 2));
+    
+    // [FIX] Check if balance/equity is valid
+    if(baseValue <= 0) {
+        Print("   ❌ CRITICAL ERROR: BaseValue <= 0!");
+        Print("   Returning minLot 0.01");
+        Print("═══════════════════════════════════════════════════════");
+        return 0.01;
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 2: Calculate risk amount
+    // ═══════════════════════════════════════════════════════════
     double riskValue = baseValue * (riskPct / 100.0);
     
-    // Get tick value for XAUUSD
+    Print("───────────────────────────────────────────────────────");
+    Print("STEP 2: RISK CALCULATION");
+    Print("   Risk%: ", riskPct, "%");
+    Print("   Formula: $", DoubleToString(baseValue, 2), " × ", riskPct, "%");
+    Print("   → Risk Amount: $", DoubleToString(riskValue, 2));
+    
+    if(riskValue <= 0) {
+        Print("   ❌ ERROR: Risk amount <= 0!");
+        Print("═══════════════════════════════════════════════════════");
+        return 0.01;
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 3: Get symbol information
+    // ═══════════════════════════════════════════════════════════
     double tickValue = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
     double tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
-    
-    if(tickSize == 0 || slPoints == 0) return 0.01;
-    
-    // Calculate value per point per lot
-    // VD: XAUUSD → $0.10 per point per 0.01 lot
-    double valuePerPointPerLot = tickValue * (_Point / tickSize);
-    
-    // Calculate lots based on: Risk $ ÷ (SL points × Value per point)
-    // VD: $50 ÷ (1000 points × $0.10) = $50 ÷ $100 = 0.5 lot
-    double lotsRaw = riskValue / (slPoints * valuePerPointPerLot);
-    double lots = NormalizeDouble(lotsRaw, 2);
-    
-    // [DEBUG] Log calculation để user hiểu rõ
-    Print("═══════════════════════════════════════");
-    Print("💰 LOT SIZING CALCULATION:");
-    Print("   Account: $", DoubleToString(baseValue, 2), 
-          " (", m_useEquityMDD ? "Equity" : "Balance", ")");
-    Print("   Risk per trade: ", riskPct, "%");
-    Print("   → Acceptable Loss: $", DoubleToString(riskValue, 2));
-    Print("   SL Distance: ", (int)slPoints, " points = ", DoubleToString(slPoints/10, 1), " pips");
-    Print("   Value per point/lot: $", DoubleToString(valuePerPointPerLot, 4));
-    Print("───────────────────────────────────────");
-    Print("   Formula: $", DoubleToString(riskValue, 2), " ÷ (", (int)slPoints, " pts × $", 
-          DoubleToString(valuePerPointPerLot, 4), ")");
-    Print("   Raw Lots: ", DoubleToString(lotsRaw, 4));
-    Print("   Normalized: ", lots);
-    
-    // Apply broker min/max limits
+    double contractSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_CONTRACT_SIZE);
     double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
     double maxLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MAX);
+    double lotStep = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
+    
+    Print("───────────────────────────────────────────────────────");
+    Print("STEP 3: SYMBOL INFORMATION");
+    Print("   Symbol: ", m_symbol);
+    Print("   _Point: ", _Point);
+    Print("   _Digits: ", _Digits);
+    Print("   TICK_VALUE: $", DoubleToString(tickValue, 4), " (for ? lot)");
+    Print("   TICK_SIZE: ", DoubleToString(tickSize, 5));
+    Print("   CONTRACT_SIZE: ", contractSize);
+    Print("   VOLUME_MIN: ", minLot);
+    Print("   VOLUME_MAX: ", maxLot);
+    Print("   VOLUME_STEP: ", lotStep);
+    Print("   SL Distance: ", (int)slPoints, " points = ", DoubleToString(slPoints/10, 1), " pips");
+    
+    // [FIX] Validation
+    if(tickSize == 0) {
+        Print("   ❌ CRITICAL ERROR: TICK_SIZE = 0!");
+        Print("   Check symbol: ", m_symbol, " - May not be loaded");
+        Print("═══════════════════════════════════════════════════════");
+        return 0.01;
+    }
+    if(slPoints == 0) {
+        Print("   ❌ ERROR: SL Points = 0!");
+        Print("   Check SL calculation in executor");
+        Print("═══════════════════════════════════════════════════════");
+        return 0.01;
+    }
+    if(contractSize == 0) {
+        Print("   ❌ WARNING: CONTRACT_SIZE = 0! Using default calculation");
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 4: Calculate value per point per lot
+    // ═══════════════════════════════════════════════════════════
+    double valuePerPointPerLot = tickValue * (_Point / tickSize);
+    
+    Print("───────────────────────────────────────────────────────");
+    Print("STEP 4: POINT VALUE CALCULATION");
+    Print("   Formula: TickValue × (_Point / TickSize)");
+    Print("   = $", DoubleToString(tickValue, 4), 
+          " × (", _Point, " / ", DoubleToString(tickSize, 5), ")");
+    Print("   = $", DoubleToString(tickValue, 4),
+          " × ", DoubleToString(_Point/tickSize, 2));
+    Print("   = $", DoubleToString(valuePerPointPerLot, 6), " per point per lot");
+    
+    // [DIAGNOSTIC] Check if value seems reasonable
+    if(valuePerPointPerLot <= 0) {
+        Print("   ❌ CRITICAL ERROR: Value per point <= 0!");
+        Print("═══════════════════════════════════════════════════════");
+        return 0.01;
+    }
+    if(valuePerPointPerLot < 0.001) {
+        Print("   ⚠️ WARNING: Value very small (", valuePerPointPerLot, ")");
+        Print("   This may cause lots to be huge - check formula!");
+    }
+    if(valuePerPointPerLot > 100) {
+        Print("   ⚠️ WARNING: Value very large (", valuePerPointPerLot, ")");
+        Print("   This may cause lots to be tiny!");
+        Print("   Likely TICK_VALUE is for 1.0 lot, not 0.01 lot");
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 5: Calculate lots
+    // ═══════════════════════════════════════════════════════════
+    double denominator = slPoints * valuePerPointPerLot;
+    
+    Print("───────────────────────────────────────────────────────");
+    Print("STEP 5: LOT CALCULATION");
+    Print("   Denominator = SL × ValuePerPoint");
+    Print("   = ", (int)slPoints, " pts × $", DoubleToString(valuePerPointPerLot, 6));
+    Print("   = $", DoubleToString(denominator, 2));
+    
+    if(denominator <= 0) {
+        Print("   ❌ CRITICAL ERROR: Denominator <= 0!");
+        Print("═══════════════════════════════════════════════════════");
+        return 0.01;
+    }
+    
+    double lotsRaw = riskValue / denominator;
+    
+    Print("   Raw Lots = Risk$ ÷ Denominator");
+    Print("   = $", DoubleToString(riskValue, 2), " ÷ $", DoubleToString(denominator, 2));
+    Print("   = ", DoubleToString(lotsRaw, 6), " lots");
+    
+    double lots = NormalizeDouble(lotsRaw, 2);
+    Print("   Normalized (2 decimals): ", lots);
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 6: Apply limits
+    // ═══════════════════════════════════════════════════════════
+    Print("───────────────────────────────────────────────────────");
+    Print("STEP 6: APPLY LIMITS");
+    Print("   Broker MinLot: ", minLot);
+    Print("   Broker MaxLot: ", maxLot);
+    
+    bool wasAdjusted = false;
     
     if(lots < minLot) {
         Print("   ⬆️ Below MinLot: ", lots, " → ", minLot);
+        Print("   ⚠️⚠️⚠️ CAPPED TO MINIMUM! This means:");
+        Print("      - Balance too small, OR");
+        Print("      - Risk% too small, OR");
+        Print("      - SL too large, OR");
+        Print("      - Point value calculation WRONG");
         lots = minLot;
+        wasAdjusted = true;
     }
     if(lots > maxLot) {
         Print("   ⬇️ Above Broker MaxLot: ", lots, " → ", maxLot);
         lots = maxLot;
+        wasAdjusted = true;
     }
     
-    // Apply dynamic MaxLotPerSide (based on equity growth)
     Print("   Current MaxLotPerSide: ", m_maxLotPerSide, 
           " (Base: ", m_lotBase, " + Growth)");
     
     if(lots > m_maxLotPerSide) {
-        Print("   ⚠️ CAPPED: ", lots, " → ", m_maxLotPerSide, " (MaxLotPerSide limit)");
+        Print("   ⚠️ CAPPED to MaxLotPerSide: ", lots, " → ", m_maxLotPerSide);
         lots = m_maxLotPerSide;
+        wasAdjusted = true;
     }
     
+    Print("───────────────────────────────────────────────────────");
     Print("   ✅ FINAL LOTS: ", lots);
-    Print("═══════════════════════════════════════");
+    
+    // [CRITICAL DIAGNOSTIC] If lot = 0.01 and raw was higher
+    if(lots == minLot && lotsRaw > minLot && wasAdjusted) {
+        Print("───────────────────────────────────────────────────────");
+        Print("⚠️⚠️⚠️ LOT WAS CAPPED TO MINIMUM!");
+        Print("   Raw calculated: ", DoubleToString(lotsRaw, 6));
+        Print("   Final: ", lots);
+        Print("   → Need to increase:");
+        Print("      1. Risk% (current: ", riskPct, "%), OR");
+        Print("      2. Balance (current: $", DoubleToString(baseValue, 2), "), OR");
+        Print("      3. Decrease SL (current: ", (int)slPoints, " pts)");
+        Print("   → OR check if point value calculation is WRONG!");
+    }
+    
+    Print("═══════════════════════════════════════════════════════");
     
     return lots;
 }
@@ -588,6 +716,7 @@ void CRiskManager::TrackPosition(ulong ticket, double entry, double sl, double t
     m_positions[size].ticket = ticket;
     m_positions[size].entryPrice = entry;
     m_positions[size].sl = sl;
+    m_positions[size].originalSL = sl;     // [FIX] Save ORIGINAL SL (never changes)
     m_positions[size].tp = tp;
     m_positions[size].originalLot = lots;
     m_positions[size].dcaCount = 0;
@@ -596,7 +725,14 @@ void CRiskManager::TrackPosition(ulong ticket, double entry, double sl, double t
     m_positions[size].dca2Added = false;
     m_positions[size].lastTrailR = 0.0;  // [NEW] Initialize trailing tracker
     
-    Print("📊 Tracking position #", ticket, " | Lots: ", lots, " | SL: ", sl, " | TP: ", tp);
+    // [DEBUG] Log ORIGINAL SL for verification
+    double initialRisk = MathAbs(entry - sl) / _Point;
+    Print("📊 Tracking position #", ticket, 
+          " | Lots: ", lots, 
+          " | Entry: ", entry,
+          " | ORIGINAL SL: ", sl, 
+          " | Initial Risk: ", (int)initialRisk, " pts",
+          " | TP: ", tp);
 }
 
 //+------------------------------------------------------------------+
@@ -802,24 +938,61 @@ double CRiskManager::GetEffectiveMaxLot() {
 
 //+------------------------------------------------------------------+
 //| Calculate profit in R (risk units)                               |
+//| [CRITICAL FIX] Dùng ORIGINAL SL để tính R, không dùng current SL |
 //+------------------------------------------------------------------+
 double CRiskManager::CalcProfitInR(ulong ticket) {
     if(!PositionSelectByTicket(ticket)) return 0;
     
     double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
     double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-    double sl = PositionGetDouble(POSITION_SL);
     int posType = (int)PositionGetInteger(POSITION_TYPE);
+    
+    // [CRITICAL FIX] Tìm ORIGINAL SL từ tracked positions
+    // Vấn đề: Nếu dùng current SL, sau khi BE/Trail thì risk thay đổi
+    // → profitR tính sai → DCA không trigger!
+    double originalSL = 0;
+    bool foundTracked = false;
+    
+    for(int i = 0; i < ArraySize(m_positions); i++) {
+        if(m_positions[i].ticket == ticket) {
+            originalSL = m_positions[i].originalSL;  // [FIX] Use stored ORIGINAL SL
+            foundTracked = true;
+            break;
+        }
+    }
+    
+    // Nếu không tìm thấy trong tracked array (orphan DCA)
+    // → Dùng current SL làm "best effort"
+    if(!foundTracked) {
+        originalSL = PositionGetDouble(POSITION_SL);
+        // NOTE: Orphan DCA sẽ có profitR based on current SL
+        // Đây là acceptable vì orphan thường đã có profit
+    }
     
     double risk = 0;
     double profit = 0;
     
     if(posType == POSITION_TYPE_BUY) {
-        risk = openPrice - sl;
+        risk = openPrice - originalSL;      // [FIX] Use ORIGINAL SL (immutable)
         profit = currentPrice - openPrice;
     } else {
-        risk = sl - openPrice;
+        risk = originalSL - openPrice;      // [FIX] Use ORIGINAL SL (immutable)
         profit = openPrice - currentPrice;
+    }
+    
+    // [DEBUG] Log calculation để debug DCA trigger
+    static datetime lastDebugLog = 0;
+    if(TimeCurrent() - lastDebugLog > 10 && profit > 0) {  // Log mỗi 10s khi có profit
+        lastDebugLog = TimeCurrent();
+        double currentSL = PositionGetDouble(POSITION_SL);
+        Print("🔍 Profit in R - Ticket #", ticket, 
+              " | Entry: ", openPrice,
+              " | Current: ", currentPrice,
+              " | Original SL: ", originalSL,
+              " | Current SL: ", currentSL,
+              " | Risk: ", (int)(risk/_Point), " pts",
+              " | Profit: ", (int)(profit/_Point), " pts",
+              " | R = ", DoubleToString(profit/risk, 2), "R");
     }
     
     if(risk <= 0) return 0;
@@ -1093,7 +1266,9 @@ void CRiskManager::ManageOpenPositions() {
     // Check daily MDD
     if(!CheckDailyMDD()) return;
     
-    // Update position tracking
+    // ═══════════════════════════════════════════════════════════════
+    // PART 1: Manage TRACKED positions (ORIGINAL positions)
+    // ═══════════════════════════════════════════════════════════════
     for(int i = ArraySize(m_positions) - 1; i >= 0; i--) {
         ulong ticket = m_positions[i].ticket;
         
@@ -1177,6 +1352,114 @@ void CRiskManager::ManageOpenPositions() {
                 } else {
                     m_positions[i].dca2Added = true;
                     Print("✗ DCA #2 skipped: would exceed MaxLot");
+                }
+            }
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // PART 2: Manage ORPHANED DCA positions (khi original đã close)
+    // ═══════════════════════════════════════════════════════════════
+    // [FIX] Nếu có positions còn lại nhưng KHÔNG có trong tracked array
+    // → Đây là DCA positions mồ côi → Vẫn cần trail/manage
+    
+    static datetime lastOrphanCheck = 0;
+    datetime currentTime = TimeCurrent();
+    
+    // Check orphan positions mỗi 5 giây để tránh spam
+    if(currentTime - lastOrphanCheck >= 5) {
+        lastOrphanCheck = currentTime;
+        
+        for(int i = 0; i < PositionsTotal(); i++) {
+            ulong ticket = PositionGetTicket(i);
+            if(!PositionSelectByTicket(ticket)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != m_symbol) continue;
+            
+            // Check if this position is already tracked
+            bool isTracked = false;
+            for(int j = 0; j < ArraySize(m_positions); j++) {
+                if(m_positions[j].ticket == ticket) {
+                    isTracked = true;
+                    break;
+                }
+            }
+            
+            // Nếu KHÔNG tracked → Đây là orphan (DCA without original)
+            if(!isTracked) {
+                string comment = PositionGetString(POSITION_COMMENT);
+                
+                // Confirm đây là DCA position
+                if(StringFind(comment, "DCA Add-on") >= 0) {
+                    double profitR = CalcProfitInR(ticket);
+                    int posType = (int)PositionGetInteger(POSITION_TYPE);
+                    int direction = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+                    
+                    // === TRAILING for ORPHAN DCA ===
+                    if(m_enableTrailing && profitR >= m_trailStartR) {
+                        // Simple trail without step tracking (vì không có struct)
+                        double currentSL = PositionGetDouble(POSITION_SL);
+                        double newSL = CalcTrailLevel(ticket, profitR);
+                        
+                        bool shouldUpdate = false;
+                        if(posType == POSITION_TYPE_BUY && newSL > currentSL) {
+                            shouldUpdate = true;
+                        } else if(posType == POSITION_TYPE_SELL && newSL < currentSL) {
+                            shouldUpdate = true;
+                        }
+                        
+                        if(shouldUpdate) {
+                            MqlTradeRequest req;
+                            MqlTradeResult res;
+                            ZeroMemory(req);
+                            ZeroMemory(res);
+                            
+                            req.action = TRADE_ACTION_SLTP;
+                            req.position = ticket;
+                            req.symbol = m_symbol;
+                            req.sl = newSL;
+                            req.tp = PositionGetDouble(POSITION_TP);
+                            
+                            if(OrderSend(req, res)) {
+                                double pointsMoved = MathAbs(newSL - currentSL) / _Point;
+                                Print("📈 Orphan DCA Trailing: #", ticket, 
+                                      " | New SL: ", newSL,
+                                      " | Moved: ", (int)pointsMoved, " pts",
+                                      " | Profit: ", DoubleToString(profitR, 2), "R");
+                            }
+                        }
+                    }
+                    
+                    // === BREAKEVEN for ORPHAN DCA ===
+                    if(m_enableBE && profitR >= m_beLevel_R) {
+                        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                        double currentSL = PositionGetDouble(POSITION_SL);
+                        
+                        // Check if not at BE yet
+                        bool needsBE = false;
+                        if(posType == POSITION_TYPE_BUY && currentSL < openPrice) {
+                            needsBE = true;
+                        } else if(posType == POSITION_TYPE_SELL && currentSL > openPrice) {
+                            needsBE = true;
+                        }
+                        
+                        if(needsBE) {
+                            MqlTradeRequest req;
+                            MqlTradeResult res;
+                            ZeroMemory(req);
+                            ZeroMemory(res);
+                            
+                            req.action = TRADE_ACTION_SLTP;
+                            req.position = ticket;
+                            req.symbol = m_symbol;
+                            req.sl = NormalizeDouble(openPrice, _Digits);
+                            req.tp = PositionGetDouble(POSITION_TP);
+                            
+                            if(OrderSend(req, res)) {
+                                Print("🎯 Orphan DCA Breakeven: #", ticket, " at +", 
+                                      DoubleToString(profitR, 2), "R");
+                            }
+                        }
+                    }
                 }
             }
         }
