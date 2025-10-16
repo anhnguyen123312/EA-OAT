@@ -1,3 +1,10 @@
 ---
 alwaysApply: true
 ---
+### Hiểu
+- Phải luân hiểu kỹ docs nói gì? lập luận chính xác, xem xét các điều kiện 
+- Nếu thiêu context thì phải hỏi lại cho rõ không được tự ý suy đoán 
+- Sau khi user đưa ra quyết định thì cập nhật lại docs cho đúng 
+
+### Hành động 
+- Có nhiều file tại liệu sau khi viết bot hãy lược bỏ những nội dung dưa thừa không liên quan đến code hay logic code thì bỏ qua, những thứ liên quan đến logic bot hay thông tin về bot luôn phải ghi lại đầy đủ, ** Không dài dòng **
