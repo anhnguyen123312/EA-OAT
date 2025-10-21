@@ -664,9 +664,763 @@ InpMomo_TTL        = 20     // TTL (bars)
 
 ---
 
-## 🆕 v2.0 Updates: Adaptive Detection
+## 🆕 v2.1 Advanced Detection Features
 
-### 1. Sweep Proximity Calculation
+### 1. OB với Sweep Validation (High Priority)
+
+#### 🎯 Mục Đích
+Xác nhận Order Block có liquidity sweep liên quan, tăng độ tin cậy của setup.
+
+#### 📝 Định Nghĩa
+
+**OB với Sweep**: Order Block mà có Sweep level **BÊN TRONG** hoặc **SÁT** OB zone.
+
+**Bullish OB với Sweep**:
+- OB Demand zone: [bottom, top]
+- Cần có Sell-Side Sweep level ≤ OB bottom (bên dưới hoặc trong zone)
+
+**Bearish OB với Sweep**:
+- OB Supply zone: [bottom, top]  
+- Cần có Buy-Side Sweep level ≥ OB top (bên trên hoặc trong zone)
+
+#### ⚙️ Thuật Toán
+
+```cpp
+struct OrderBlock {
+    // ... existing fields ...
+    
+    // NEW v2.1
+    bool hasSweepNearby;       // Có sweep gần OB
+    double sweepLevel;         // Giá của sweep
+    int sweepDistancePts;      // Khoảng cách OB - Sweep (points)
+    double sweepQuality;       // Chất lượng sweep (0-1)
+};
+
+OrderBlock FindOBWithSweep(int direction, SweepSignal sweep) {
+    // STEP 1: Tìm OB như bình thường
+    OrderBlock ob = FindOB(direction);
+    if(!ob.valid) return ob;
+    
+    // STEP 2: Check sweep relationship
+    if(direction == 1) {
+        // BULLISH OB: Cần SELL-SIDE sweep (side = -1)
+        if(sweep.valid && sweep.side == -1) {
+            
+            // Case A: Sweep BÊN DƯỚI OB (ideal)
+            if(sweep.level <= ob.priceBottom) {
+                double distance = ob.priceBottom - sweep.level;
+                ob.sweepDistancePts = (int)(distance / _Point);
+                
+                // Sweep càng gần càng tốt (< 100 points)
+                if(ob.sweepDistancePts <= 100) {
+                    ob.hasSweepNearby = true;
+                    ob.sweepLevel = sweep.level;
+                    
+                    // Quality: 1.0 nếu rất gần, giảm dần
+                    ob.sweepQuality = 1.0 - (ob.sweepDistancePts / 200.0);
+                    ob.sweepQuality = MathMax(0.0, ob.sweepQuality);
+                }
+            }
+            
+            // Case B: Sweep TRONG OB zone (less ideal nhưng OK)
+            else if(sweep.level >= ob.priceBottom && 
+                    sweep.level <= ob.priceTop) {
+                ob.hasSweepNearby = true;
+                ob.sweepLevel = sweep.level;
+                ob.sweepDistancePts = 0; // Inside zone
+                ob.sweepQuality = 0.8; // Slightly lower quality
+            }
+        }
+    }
+    else if(direction == -1) {
+        // BEARISH OB: Cần BUY-SIDE sweep (side = +1)
+        if(sweep.valid && sweep.side == 1) {
+            
+            // Case A: Sweep BÊN TRÊN OB (ideal)
+            if(sweep.level >= ob.priceTop) {
+                double distance = sweep.level - ob.priceTop;
+                ob.sweepDistancePts = (int)(distance / _Point);
+                
+                if(ob.sweepDistancePts <= 100) {
+                    ob.hasSweepNearby = true;
+                    ob.sweepLevel = sweep.level;
+                    ob.sweepQuality = 1.0 - (ob.sweepDistancePts / 200.0);
+                    ob.sweepQuality = MathMax(0.0, ob.sweepQuality);
+                }
+            }
+            
+            // Case B: Sweep TRONG OB zone
+            else if(sweep.level <= ob.priceTop && 
+                    sweep.level >= ob.priceBottom) {
+                ob.hasSweepNearby = true;
+                ob.sweepLevel = sweep.level;
+                ob.sweepDistancePts = 0;
+                ob.sweepQuality = 0.8;
+            }
+        }
+    }
+    
+    return ob;
+}
+```
+
+#### 💡 Ví Dụ
+
+##### Example 1: OB với Sweep Lý Tưởng
+```
+Price action (BULLISH setup):
+─────────────────────────────────────
+
+Bar 50: Rally bắt đầu
+        │
+        │  ┌────────┐
+        │  │   OB   │ 2649.00 - 2649.50
+        │  │ DEMAND │
+        │  └────────┘
+        │      ▲
+        │      │ Distance: 30 pts
+        │      │
+Bar 55: ●────── Sweep Level: 2648.70
+        SELL-SIDE SWEEP
+
+→ OB.hasSweepNearby = true
+→ OB.sweepDistancePts = 30
+→ OB.sweepQuality = 0.85
+→ Bonus: +20 điểm (high confidence)
+```
+
+##### Example 2: Sweep Trong OB Zone
+```
+Price action (BULLISH setup):
+─────────────────────────────────────
+        │  ┌────────┐ 2649.50 (top)
+        │  │        │
+Bar 53: ●──┼ Sweep  │ 2649.20 ← INSIDE zone
+        │  │        │
+        │  │   OB   │
+        │  └────────┘ 2649.00 (bottom)
+
+→ OB.hasSweepNearby = true
+→ OB.sweepDistancePts = 0 (inside)
+→ OB.sweepQuality = 0.8
+→ Bonus: +15 điểm (good but not ideal)
+```
+
+##### Example 3: Sweep Quá Xa
+```
+Price action (BULLISH setup):
+─────────────────────────────────────
+        │  ┌────────┐
+        │  │   OB   │ 2649.00 - 2649.50
+        │  └────────┘
+        │      
+        │ Distance: 150 pts (TOO FAR)
+        │      
+Bar 60: ●────── Sweep Level: 2647.50
+
+→ OB.hasSweepNearby = false
+→ Không bonus
+→ OB vẫn valid nhưng confidence thấp hơn
+```
+
+#### 📊 Scoring Impact
+
+```cpp
+// In Arbiter scoring:
+if(c.hasOB && c.obHasSweep) {
+    if(c.obSweepQuality >= 0.8) {
+        score += 20;
+        Print("✨ OB with nearby sweep (+20)");
+    } else if(c.obSweepQuality >= 0.5) {
+        score += 15;
+        Print("✨ OB with sweep (+15)");
+    } else {
+        score += 10;
+        Print("✨ OB with distant sweep (+10)");
+    }
+}
+```
+
+---
+
+### 2. FVG MTF Overlap (Subset Validation)
+
+#### 🎯 Mục Đích
+Xác nhận FVG trên current timeframe được support bởi FVG trên higher timeframe, tạo confluence mạnh.
+
+#### 📝 Định Nghĩa
+
+**FVG MTF Overlap**: FVG trên M15/M30 là **TẬP CON** của FVG trên H1/H4.
+
+**Điều kiện Overlap (Subset)**:
+- Cùng direction (bullish/bearish)
+- LTF FVG zone **NẰM TRONG** HTF FVG zone
+- Cho phép chênh lệch nhỏ (tolerance)
+
+#### ⚙️ Thuật Toán
+
+```cpp
+struct FVGSignal {
+    // ... existing fields ...
+    
+    // NEW v2.1
+    bool mtfOverlap;           // HTF confirmation
+    double htfFVGTop;          // HTF FVG top
+    double htfFVGBottom;       // HTF FVG bottom
+    double overlapRatio;       // % overlap (0-1)
+    ENUM_TIMEFRAMES htfPeriod; // Which HTF
+};
+
+bool CheckFVGMTFOverlap(FVGSignal &ltfFVG) {
+    // STEP 1: Determine HTF
+    ENUM_TIMEFRAMES htf = PERIOD_H1;
+    if(_Period == PERIOD_M15 || _Period == PERIOD_M30) {
+        htf = PERIOD_H1;
+    } else if(_Period == PERIOD_H1) {
+        htf = PERIOD_H4;
+    }
+    
+    // STEP 2: Get HTF data
+    double htfHigh[], htfLow[], htfClose[];
+    ArraySetAsSeries(htfHigh, true);
+    ArraySetAsSeries(htfLow, true);
+    ArraySetAsSeries(htfClose, true);
+    
+    CopyHigh(_Symbol, htf, 0, 60, htfHigh);
+    CopyLow(_Symbol, htf, 0, 60, htfLow);
+    CopyClose(_Symbol, htf, 0, 60, htfClose);
+    
+    // STEP 3: Scan for HTF FVG in same direction
+    for(int i = 2; i < 60; i++) {
+        if(ltfFVG.direction == 1) {
+            // BULLISH: Check if low[i] > high[i+2]
+            if(htfLow[i] > htfHigh[i+2]) {
+                double htfTop = htfLow[i];
+                double htfBottom = htfHigh[i+2];
+                double htfSize = htfTop - htfBottom;
+                
+                // Validate HTF FVG size (min 200 pts for H1)
+                if(htfSize >= 200 * _Point) {
+                    
+                    // STEP 4: Check SUBSET relationship
+                    // LTF phải NẰM TRONG HTF (có tolerance)
+                    double tolerance = 50 * _Point; // ±50 pts
+                    
+                    if(ltfFVG.priceBottom >= (htfBottom - tolerance) &&
+                       ltfFVG.priceTop <= (htfTop + tolerance)) {
+                        
+                        // SUBSET confirmed!
+                        ltfFVG.mtfOverlap = true;
+                        ltfFVG.htfFVGTop = htfTop;
+                        ltfFVG.htfFVGBottom = htfBottom;
+                        ltfFVG.htfPeriod = htf;
+                        
+                        // Calculate overlap ratio
+                        double ltfSize = ltfFVG.priceTop - ltfFVG.priceBottom;
+                        ltfFVG.overlapRatio = ltfSize / htfSize;
+                        
+                        Print("🎯 FVG MTF Overlap: LTF ", 
+                              ltfFVG.priceBottom, "-", ltfFVG.priceTop,
+                              " ⊂ HTF ", htfBottom, "-", htfTop);
+                        
+                        return true;
+                    }
+                }
+            }
+        }
+        else if(ltfFVG.direction == -1) {
+            // BEARISH: Check if high[i] < low[i+2]
+            if(htfHigh[i] < htfLow[i+2]) {
+                double htfBottom = htfHigh[i];
+                double htfTop = htfLow[i+2];
+                double htfSize = htfTop - htfBottom;
+                
+                if(htfSize >= 200 * _Point) {
+                    double tolerance = 50 * _Point;
+                    
+                    if(ltfFVG.priceBottom >= (htfBottom - tolerance) &&
+                       ltfFVG.priceTop <= (htfTop + tolerance)) {
+                        
+                        ltfFVG.mtfOverlap = true;
+                        ltfFVG.htfFVGTop = htfTop;
+                        ltfFVG.htfFVGBottom = htfBottom;
+                        ltfFVG.htfPeriod = htf;
+                        ltfFVG.overlapRatio = 
+                            (ltfFVG.priceTop - ltfFVG.priceBottom) / htfSize;
+                        
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    return false; // No HTF overlap found
+}
+```
+
+#### 💡 Ví Dụ
+
+##### Example 1: Perfect Subset
+```
+Timeframe: M30 (current)
+─────────────────────────────────────
+
+M30 FVG (Bullish):
+    2649.00 ━━━━━━━━ Top
+    │   LTF FVG   │
+    │   200 pts   │
+    2647.00 ━━━━━━━━ Bottom
+
+H1 FVG (Bullish):
+    2650.00 ════════ Top
+    │              │
+    │   HTF FVG   │
+    │   400 pts   │  ← M30 FVG NẰM TRONG H1
+    │              │
+    2646.00 ════════ Bottom
+
+→ M30 [2647.00-2649.00] ⊂ H1 [2646.00-2650.00] ✓
+→ mtfOverlap = true
+→ overlapRatio = 200/400 = 0.5
+→ Bonus: +25 điểm (very high confidence)
+```
+
+##### Example 2: Partial Overlap (Invalid)
+```
+M30 FVG: 2649.00 - 2651.00
+H1 FVG:  2648.00 - 2650.00
+
+    2651.00 ━━━━  M30 Top (NGOÀI H1!)
+    2650.00 ════  H1 Top
+    2649.00 ━━━━  M30 Bottom
+    2648.00 ════  H1 Bottom
+
+→ M30 KHÔNG phải subset của H1 ✗
+→ mtfOverlap = false
+→ Không bonus
+```
+
+##### Example 3: Tolerance Pass
+```
+M30 FVG: 2647.00 - 2649.00
+H1 FVG:  2646.90 - 2650.00
+
+With tolerance ±50 pts:
+    M30 Bottom: 2647.00
+    H1 Bottom: 2646.90 (within tolerance)
+    
+→ PASS with tolerance ✓
+→ mtfOverlap = true
+→ Bonus: +20 điểm
+```
+
+#### 📊 Scoring Impact
+
+```cpp
+// In Arbiter scoring:
+if(c.hasFVG && c.fvgMTFOverlap) {
+    if(c.fvgOverlapRatio >= 0.7) {
+        // LTF chiếm >70% HTF → rất aligned
+        score += 25;
+        Print("✨ FVG MTF perfect overlap (+25)");
+    } else if(c.fvgOverlapRatio >= 0.4) {
+        // Medium overlap
+        score += 20;
+        Print("✨ FVG MTF good overlap (+20)");
+    } else {
+        // Small subset but still valid
+        score += 15;
+        Print("✨ FVG MTF overlap (+15)");
+    }
+}
+```
+
+---
+
+### 3. BOS Retest Tracking
+
+#### 🎯 Mục Đích
+Track số lần price retest BOS level để xác nhận độ mạnh của structure break.
+
+#### 📝 Định Nghĩa
+
+**BOS Retest**: Price quay lại test lại BOS breakout level sau khi break.
+
+**Retest Valid**:
+- Price phải close ở ±30 points của BOS level
+- Không được invalid BOS (close beyond level)
+- Mỗi retest cách nhau ít nhất 3 bars
+
+#### ⚙️ Thuật Toán
+
+```cpp
+struct BOSSignal {
+    // ... existing fields ...
+    
+    // NEW v2.1
+    int retestCount;           // Số lần retest
+    datetime lastRetestTime;   // Thời gian retest gần nhất
+    bool hasRetest;            // Có ít nhất 1 retest
+    double retestStrength;     // Độ mạnh (0-1)
+};
+
+void UpdateBOSRetest(BOSSignal &bos) {
+    if(!bos.valid) return;
+    
+    double retestZoneTop, retestZoneBottom;
+    double tolerance = 30 * _Point; // ±30 pts
+    
+    if(bos.direction == 1) {
+        // BULLISH BOS: Retest zone TRÊN breakLevel
+        retestZoneBottom = bos.breakLevel;
+        retestZoneTop = bos.breakLevel + tolerance;
+    } else {
+        // BEARISH BOS: Retest zone DƯỚI breakLevel
+        retestZoneTop = bos.breakLevel;
+        retestZoneBottom = bos.breakLevel - tolerance;
+    }
+    
+    // Scan recent bars for retest (bars 1-20)
+    for(int i = 1; i <= 20; i++) {
+        datetime barTime = iTime(_Symbol, _Period, i);
+        
+        // Skip if too close to last retest (min 3 bars)
+        if(bos.lastRetestTime != 0 && 
+           (bos.lastRetestTime - barTime) < PeriodSeconds(_Period) * 3) {
+            continue;
+        }
+        
+        double closePrice = iClose(_Symbol, _Period, i);
+        
+        // Check if close in retest zone
+        if(closePrice >= retestZoneBottom && 
+           closePrice <= retestZoneTop) {
+            
+            // RETEST detected!
+            bos.retestCount++;
+            bos.lastRetestTime = barTime;
+            bos.hasRetest = true;
+            
+            Print("🔄 BOS Retest #", bos.retestCount, 
+                  " at ", closePrice, " (bar ", i, ")");
+            
+            // Don't count more than 3 retests
+            if(bos.retestCount >= 3) break;
+        }
+    }
+    
+    // Calculate strength based on retest count
+    if(bos.retestCount == 0) {
+        bos.retestStrength = 0.0; // No retest = lower confidence
+    } else if(bos.retestCount == 1) {
+        bos.retestStrength = 0.7; // 1 retest = good
+    } else if(bos.retestCount == 2) {
+        bos.retestStrength = 0.9; // 2 retest = very good
+    } else {
+        bos.retestStrength = 1.0; // 3+ retest = excellent
+    }
+}
+```
+
+#### 💡 Ví Dụ
+
+##### Example 1: BOS với 1 Retest (Good)
+```
+Price action (BULLISH BOS):
+─────────────────────────────────────
+Bar 0:  │
+        │        Rally continues
+        │     ╱
+        │    ╱
+Bar 10: │   ● ← Retest 2654.20 (1st)
+        │   │  (trong zone ±30 pts)
+        │   │
+Bar 15: │  ╱
+        │ ╱  Initial breakout
+─────────●────── BOS Level: 2654.00
+      ╱ │
+     ╱  │
+
+→ retestCount = 1
+→ retestStrength = 0.7
+→ Bonus: +10 điểm
+```
+
+##### Example 2: BOS với 2 Retest (Very Good)
+```
+Price action:
+─────────────────────────────────────
+Bar 0:  │     Strong rally
+        │   ╱
+Bar 5:  │  ● ← Retest #2 (2654.10)
+        │  │
+Bar 10: │ ╱
+        │╱
+Bar 15: ● ← Retest #1 (2654.25)
+        │
+Bar 20: │╱ Initial break
+─────────●────── BOS Level: 2654.00
+
+→ retestCount = 2
+→ retestStrength = 0.9
+→ Bonus: +15 điểm (strong level)
+```
+
+##### Example 3: No Retest (Lower Confidence)
+```
+Price action:
+─────────────────────────────────────
+Bar 0:  │
+        │      
+        │   ╱  Direct rally
+        │  ╱   (NO pullback)
+        │ ╱
+        │╱
+─────────●────── BOS Level: 2654.00
+
+→ retestCount = 0
+→ retestStrength = 0.0
+→ Không bonus (có thể là breakout yếu)
+→ Yêu cầu confluence factors khác
+```
+
+#### 📊 Scoring Impact
+
+```cpp
+// In Arbiter scoring:
+if(c.hasBOS) {
+    if(c.bosRetestCount >= 2) {
+        score += 15;
+        Print("✨ BOS with 2+ retest (+15)");
+    } else if(c.bosRetestCount == 1) {
+        score += 10;
+        Print("✨ BOS with retest (+10)");
+    } else {
+        // No retest = penalty
+        score -= 5;
+        Print("⚠️ BOS no retest (-5)");
+    }
+}
+```
+
+---
+
+### 4. Entry Method Based on Pattern
+
+#### 🎯 Mục Đích
+Sử dụng entry method phù hợp với từng loại pattern để optimize RR và fill rate.
+
+#### 📝 Entry Method Matrix
+
+| Pattern | Entry Type | Entry Price | Rationale |
+|---------|-----------|-------------|-----------|
+| **CHOCH (BOS)** | STOP | Trigger candle high/low + buffer | Break momentum, chase |
+| **FVG** | LIMIT | FVG bottom/top | Wait for discount/premium |
+| **OB** | LIMIT | OB bottom/top | Wait for institution zone |
+| **Sweep + BOS** | STOP | Above/below trigger | Strong momentum |
+| **BOS with Retest** | LIMIT | Retest zone | Better entry on pullback |
+| **Momentum** | STOP | Breakout level | Don't miss runner |
+
+#### ⚙️ Thuật Toán
+
+```cpp
+enum ENTRY_TYPE {
+    ENTRY_STOP = 0,    // Buy/Sell Stop
+    ENTRY_LIMIT = 1,   // Buy/Sell Limit
+    ENTRY_MARKET = 2   // Market execution
+};
+
+struct EntryConfig {
+    ENTRY_TYPE type;
+    double price;
+    string reason;
+};
+
+EntryConfig DetermineEntryMethod(Candidate &c) {
+    EntryConfig entry;
+    
+    // ═══════════════════════════════════════════════════
+    // PRIORITY 1: FVG → LIMIT (best RR)
+    // ═══════════════════════════════════════════════════
+    if(c.hasFVG && c.fvgState == 0) { // Fresh FVG
+        entry.type = ENTRY_LIMIT;
+        
+        if(c.direction == 1) {
+            // BUY LIMIT at FVG bottom (discount)
+            entry.price = c.fvgBottom;
+        } else {
+            // SELL LIMIT at FVG top (premium)
+            entry.price = c.fvgTop;
+        }
+        
+        entry.reason = "FVG Limit Entry (Optimal RR)";
+        return entry;
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // PRIORITY 2: OB with Retest → LIMIT
+    // ═══════════════════════════════════════════════════
+    if(c.hasOB && c.hasBOS && c.bosRetestCount >= 1) {
+        entry.type = ENTRY_LIMIT;
+        
+        if(c.direction == 1) {
+            entry.price = c.poiBottom; // OB demand bottom
+        } else {
+            entry.price = c.poiTop; // OB supply top
+        }
+        
+        entry.reason = "OB Retest Limit Entry";
+        return entry;
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // PRIORITY 3: Sweep + BOS → STOP (momentum)
+    // ═══════════════════════════════════════════════════
+    if(c.hasSweep && c.hasBOS) {
+        entry.type = ENTRY_STOP;
+        
+        double triggerHigh = iHigh(_Symbol, _Period, 0);
+        double triggerLow = iLow(_Symbol, _Period, 0);
+        double buffer = InpEntryBufferPts * _Point;
+        
+        if(c.direction == 1) {
+            entry.price = triggerHigh + buffer;
+        } else {
+            entry.price = triggerLow - buffer;
+        }
+        
+        entry.reason = "Sweep+BOS Stop Entry (Momentum)";
+        return entry;
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // PRIORITY 4: BOS only (CHOCH) → STOP
+    // ═══════════════════════════════════════════════════
+    if(c.hasBOS && !c.hasOB && !c.hasFVG) {
+        entry.type = ENTRY_STOP;
+        
+        double triggerHigh = iHigh(_Symbol, _Period, 0);
+        double triggerLow = iLow(_Symbol, _Period, 0);
+        double buffer = InpEntryBufferPts * _Point;
+        
+        if(c.direction == 1) {
+            entry.price = triggerHigh + buffer;
+        } else {
+            entry.price = triggerLow - buffer;
+        }
+        
+        entry.reason = "CHOCH Stop Entry";
+        return entry;
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // DEFAULT: OB → LIMIT
+    // ═══════════════════════════════════════════════════
+    if(c.hasOB) {
+        entry.type = ENTRY_LIMIT;
+        
+        if(c.direction == 1) {
+            entry.price = c.poiBottom;
+        } else {
+            entry.price = c.poiTop;
+        }
+        
+        entry.reason = "OB Limit Entry (Default)";
+        return entry;
+    }
+    
+    // FALLBACK: STOP order
+    entry.type = ENTRY_STOP;
+    entry.reason = "Fallback Stop Entry";
+    return entry;
+}
+```
+
+#### 💡 Ví Dụ Decision Tree
+
+```
+Setup Analysis:
+───────────────────────────────────────────────────
+
+Candidate:
+  ✓ BOS: Bullish
+  ✓ Sweep: Sell-side at 2648.50
+  ✓ FVG: Bullish 2649.00-2651.00 (Fresh)
+  ✓ OB: None
+
+Decision Tree:
+  1. Has FVG? → YES (Fresh)
+     → Use LIMIT at 2649.00 (FVG bottom)
+     → Reason: "FVG Limit Entry (Optimal RR)"
+     → Expected RR: 3.0+
+
+  Entry Order:
+     Type: BUY LIMIT
+     Price: 2649.00
+     SL: 2648.50 (sweep level)
+     TP: 2655.00 (swing high)
+     Distance SL: 50 pts ($50 risk per 0.01 lot)
+     RR: 600 pts / 50 pts = 12:1 ✨
+
+───────────────────────────────────────────────────
+
+Candidate 2:
+  ✓ BOS: Bullish
+  ✓ Sweep: Sell-side
+  ✗ FVG: None
+  ✓ OB: Bullish 2649.00-2649.50
+
+Decision Tree:
+  1. Has FVG? → NO
+  2. Has OB + BOS? → YES
+     → Check retest: 0 retest
+     → Use LIMIT at 2649.00 (OB bottom)
+     → Reason: "OB Limit Entry (Default)"
+
+  Entry Order:
+     Type: BUY LIMIT
+     Price: 2649.00
+     SL: 2648.50
+     TP: 2654.00
+     RR: 5.0 / 0.5 = 10:1
+
+───────────────────────────────────────────────────
+
+Candidate 3:
+  ✓ BOS: Bullish (CHOCH)
+  ✓ Sweep: Sell-side
+  ✗ FVG: None
+  ✗ OB: None
+  ✓ Momentum: Strong
+
+Decision Tree:
+  1. Has FVG? → NO
+  2. Has OB? → NO
+  3. Has Sweep + BOS? → YES
+     → Use STOP order (chase momentum)
+     → Reason: "Sweep+BOS Stop Entry (Momentum)"
+
+  Entry Order:
+     Type: BUY STOP
+     Price: 2651.50 (trigger high + buffer)
+     SL: 2648.50
+     TP: 2657.50
+     RR: 6.0 / 3.0 = 2:1
+```
+
+#### 📊 Expected Impact
+
+| Entry Method | Fill Rate | Avg RR | Win Rate | Use Case |
+|--------------|-----------|--------|----------|----------|
+| **LIMIT (FVG)** | 60-70% | 3.5-4.0 | 72-75% | Best quality, wait |
+| **LIMIT (OB)** | 70-80% | 3.0-3.5 | 68-72% | Good balance |
+| **STOP (Sweep+BOS)** | 95-100% | 2.0-2.5 | 65-68% | Don't miss runner |
+| **STOP (CHOCH)** | 95-100% | 1.8-2.2 | 63-66% | Momentum play |
+
+---
+
+## 🆕 v2.0 Updates: Adaptive Detection
 
 #### 🎯 Mục Đích
 Tính khoảng cách từ sweep level đến current price theo đơn vị ATR.

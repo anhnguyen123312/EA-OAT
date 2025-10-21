@@ -156,7 +156,362 @@ if(waeHistogram > waeThreshold) {
 
 ## 📋 Roadmap Chi Tiết
 
-### 🟢 Phase 1: Critical Fixes (Week 1-2)
+### 🔴 Phase 0: v2.1 Advanced Features (NEW - Week 1-4)
+
+**Priority**: HIGHEST  
+**Status**: Documentation Complete ✅  
+**Expected Impact**: Win Rate +7-10%, RR +50-75%
+
+#### 0.1 **OB với Sweep Validation** 💎
+
+**File**: `detectors.mqh`, `02_DETECTORS.md`
+
+**Objective**: Xác nhận Order Block có liquidity sweep, tăng confidence.
+
+**Implementation**:
+```cpp
+struct OrderBlock {
+    // ... existing fields ...
+    
+    // NEW v2.1
+    bool hasSweepNearby;       // Có sweep gần OB
+    double sweepLevel;         // Giá của sweep
+    int sweepDistancePts;      // Khoảng cách (points)
+    double sweepQuality;       // Chất lượng (0-1)
+};
+
+OrderBlock FindOBWithSweep(int direction, SweepSignal sweep) {
+    OrderBlock ob = FindOB(direction);
+    if(!ob.valid) return ob;
+    
+    // Check sweep relationship
+    if(direction == 1) { // BULLISH
+        if(sweep.valid && sweep.side == -1) { // SELL-SIDE
+            if(sweep.level <= ob.priceBottom) {
+                // Sweep below OB (ideal)
+                ob.hasSweepNearby = true;
+                ob.sweepDistancePts = (ob.priceBottom - sweep.level) / _Point;
+                ob.sweepQuality = 1.0 - (ob.sweepDistancePts / 200.0);
+            }
+            else if(sweep.level >= ob.priceBottom && 
+                    sweep.level <= ob.priceTop) {
+                // Sweep INSIDE OB (ultimate)
+                ob.hasSweepNearby = true;
+                ob.sweepDistancePts = 0;
+                ob.sweepQuality = 0.8;
+            }
+        }
+    }
+    // Similar for bearish...
+    
+    return ob;
+}
+```
+
+**Scoring**:
+```cpp
+if(c.hasOB && c.obHasSweep) {
+    if(c.obSweepQuality >= 0.8) {
+        score += 25; // Perfect
+        if(c.obSweepDistance == 0) {
+            score += 10; // Inside OB!
+        }
+    } else if(c.obSweepQuality >= 0.5) {
+        score += 15; // Good
+    } else {
+        score += 10; // OK
+    }
+} else if(c.hasOB && !c.obHasSweep) {
+    score -= 10; // Penalty
+}
+```
+
+**Expected Impact**:
+- Win rate: +5-8%
+- False signals: -40%
+- Time: 3 days
+
+---
+
+#### 0.2 **FVG MTF Overlap (Subset)** 🎯
+
+**File**: `detectors.mqh`, `02_DETECTORS.md`
+
+**Objective**: Xác nhận LTF FVG là subset của HTF FVG.
+
+**Implementation**:
+```cpp
+struct FVGSignal {
+    // ... existing ...
+    
+    // NEW v2.1
+    bool mtfOverlap;           // HTF confirmation
+    double htfFVGTop;          // HTF FVG top
+    double htfFVGBottom;       // HTF FVG bottom
+    double overlapRatio;       // LTF/HTF size (0-1)
+    ENUM_TIMEFRAMES htfPeriod; // H1/H4
+};
+
+bool CheckFVGMTFOverlap(FVGSignal &ltfFVG) {
+    ENUM_TIMEFRAMES htf = (_Period <= PERIOD_M30) ? PERIOD_H1 : PERIOD_H4;
+    
+    // Get HTF data
+    double htfHigh[], htfLow[];
+    CopyHigh(_Symbol, htf, 0, 60, htfHigh);
+    CopyLow(_Symbol, htf, 0, 60, htfLow);
+    
+    // Scan for HTF FVG same direction
+    for(int i = 2; i < 60; i++) {
+        if(ltfFVG.direction == 1) {
+            // Bullish: low[i] > high[i+2]
+            if(htfLow[i] > htfHigh[i+2]) {
+                double htfTop = htfLow[i];
+                double htfBottom = htfHigh[i+2];
+                double tolerance = 50 * _Point;
+                
+                // Check SUBSET relationship
+                if(ltfFVG.priceBottom >= (htfBottom - tolerance) &&
+                   ltfFVG.priceTop <= (htfTop + tolerance)) {
+                    
+                    ltfFVG.mtfOverlap = true;
+                    ltfFVG.htfFVGTop = htfTop;
+                    ltfFVG.htfFVGBottom = htfBottom;
+                    ltfFVG.overlapRatio = 
+                        (ltfFVG.priceTop - ltfFVG.priceBottom) / (htfTop - htfBottom);
+                    ltfFVG.htfPeriod = htf;
+                    
+                    return true;
+                }
+            }
+        }
+        // Similar for bearish...
+    }
+    
+    return false;
+}
+```
+
+**Scoring**:
+```cpp
+if(c.hasFVG && c.fvgMTFOverlap) {
+    if(c.fvgOverlapRatio >= 0.7) {
+        score += 30; // Perfect subset
+        if(c.fvgHTFPeriod == PERIOD_H4) {
+            score += 10; // H4 bonus
+        }
+    } else if(c.fvgOverlapRatio >= 0.4) {
+        score += 20; // Good
+    } else {
+        score += 15; // OK
+    }
+} else if(c.hasFVG && !c.fvgMTFOverlap) {
+    score -= 5; // Penalty
+}
+```
+
+**Expected Impact**:
+- Win rate: +6-10%
+- RR improvement: +0.5-1.0
+- Time: 3 days
+
+---
+
+#### 0.3 **BOS Retest Tracking** 🔄
+
+**File**: `detectors.mqh`, `02_DETECTORS.md`
+
+**Objective**: Track số lần price retest BOS level.
+
+**Implementation**:
+```cpp
+struct BOSSignal {
+    // ... existing ...
+    
+    // NEW v2.1
+    int retestCount;           // Số lần retest
+    datetime lastRetestTime;   // Thời gian retest gần nhất
+    bool hasRetest;            // Có ít nhất 1 retest
+    double retestStrength;     // 0-1
+};
+
+void UpdateBOSRetest(BOSSignal &bos) {
+    if(!bos.valid) return;
+    
+    double tolerance = 30 * _Point; // ±30 pts
+    double retestZoneTop, retestZoneBottom;
+    
+    if(bos.direction == 1) {
+        retestZoneBottom = bos.breakLevel;
+        retestZoneTop = bos.breakLevel + tolerance;
+    } else {
+        retestZoneTop = bos.breakLevel;
+        retestZoneBottom = bos.breakLevel - tolerance;
+    }
+    
+    // Scan recent bars (1-20)
+    for(int i = 1; i <= 20; i++) {
+        datetime barTime = iTime(_Symbol, _Period, i);
+        
+        // Skip if too close to last retest (min 3 bars)
+        if(bos.lastRetestTime != 0 && 
+           (bos.lastRetestTime - barTime) < PeriodSeconds(_Period) * 3) {
+            continue;
+        }
+        
+        double closePrice = iClose(_Symbol, _Period, i);
+        
+        // Check if in retest zone
+        if(closePrice >= retestZoneBottom && 
+           closePrice <= retestZoneTop) {
+            bos.retestCount++;
+            bos.lastRetestTime = barTime;
+            bos.hasRetest = true;
+            
+            if(bos.retestCount >= 3) break; // Max 3
+        }
+    }
+    
+    // Calculate strength
+    if(bos.retestCount == 0) bos.retestStrength = 0.0;
+    else if(bos.retestCount == 1) bos.retestStrength = 0.7;
+    else if(bos.retestCount == 2) bos.retestStrength = 0.9;
+    else bos.retestStrength = 1.0;
+}
+```
+
+**Scoring**:
+```cpp
+if(c.hasBOS) {
+    if(c.bosRetestCount >= 2) {
+        score += 20; // Strong
+        if(c.hasOB) {
+            score += 10; // OB at retest
+        }
+    } else if(c.bosRetestCount == 1) {
+        score += 12; // Good
+    } else {
+        score -= 8; // No retest
+        if(!c.hasWAE && !c.hasMomo) {
+            score -= 10; // No momentum
+        }
+    }
+}
+```
+
+**Expected Impact**:
+- Win rate: +3-5%
+- False breakout reduction: -40-50%
+- Time: 2 days
+
+---
+
+#### 0.4 **Entry Method Based on Pattern** 📍
+
+**File**: `executor.mqh`, `02_DETECTORS.md`
+
+**Objective**: Optimize entry method cho từng pattern type.
+
+**Implementation**:
+```cpp
+enum ENTRY_TYPE {
+    ENTRY_STOP = 0,    // Buy/Sell Stop
+    ENTRY_LIMIT = 1,   // Buy/Sell Limit
+    ENTRY_MARKET = 2   // Market
+};
+
+struct EntryConfig {
+    ENTRY_TYPE type;
+    double price;
+    string reason;
+};
+
+EntryConfig DetermineEntryMethod(Candidate &c) {
+    EntryConfig entry;
+    
+    // PRIORITY 1: FVG → LIMIT (best RR)
+    if(c.hasFVG && c.fvgState == 0) {
+        entry.type = ENTRY_LIMIT;
+        entry.price = (c.direction == 1) ? c.fvgBottom : c.fvgTop;
+        entry.reason = "FVG Limit Entry (Optimal RR)";
+        return entry;
+    }
+    
+    // PRIORITY 2: OB with Retest → LIMIT
+    if(c.hasOB && c.hasBOS && c.bosRetestCount >= 1) {
+        entry.type = ENTRY_LIMIT;
+        entry.price = (c.direction == 1) ? c.poiBottom : c.poiTop;
+        entry.reason = "OB Retest Limit Entry";
+        return entry;
+    }
+    
+    // PRIORITY 3: Sweep + BOS → STOP (momentum)
+    if(c.hasSweep && c.hasBOS) {
+        entry.type = ENTRY_STOP;
+        double triggerHigh = iHigh(_Symbol, _Period, 0);
+        double triggerLow = iLow(_Symbol, _Period, 0);
+        double buffer = InpEntryBufferPts * _Point;
+        entry.price = (c.direction == 1) ? 
+                      triggerHigh + buffer : triggerLow - buffer;
+        entry.reason = "Sweep+BOS Stop Entry (Momentum)";
+        return entry;
+    }
+    
+    // PRIORITY 4: BOS only (CHOCH) → STOP
+    if(c.hasBOS && !c.hasOB && !c.hasFVG) {
+        entry.type = ENTRY_STOP;
+        double triggerHigh = iHigh(_Symbol, _Period, 0);
+        double triggerLow = iLow(_Symbol, _Period, 0);
+        double buffer = InpEntryBufferPts * _Point;
+        entry.price = (c.direction == 1) ? 
+                      triggerHigh + buffer : triggerLow - buffer;
+        entry.reason = "CHOCH Stop Entry";
+        return entry;
+    }
+    
+    // DEFAULT: OB → LIMIT
+    if(c.hasOB) {
+        entry.type = ENTRY_LIMIT;
+        entry.price = (c.direction == 1) ? c.poiBottom : c.poiTop;
+        entry.reason = "OB Limit Entry (Default)";
+        return entry;
+    }
+    
+    // FALLBACK
+    entry.type = ENTRY_STOP;
+    entry.reason = "Fallback Stop Entry";
+    return entry;
+}
+```
+
+**Expected Impact**:
+- Avg RR: +0.5-1.0
+- Win rate: +2-4%
+- Fill rate: Variable (60-100% depending on method)
+- Time: 2 days
+
+---
+
+#### 0.5 **v2.1 Integration & Testing**
+
+**Week 4**:
+1. ✅ Integrate all 4 features
+2. ✅ Update Arbiter scoring
+3. ✅ Add new parameters
+4. ✅ Unit test each feature
+5. ✅ Backtest 3 months
+6. ✅ Compare with v1.2
+
+**Expected Combined Impact**:
+```
+Win Rate:       65% → 72-75%  (+7-10%)
+Profit Factor:  2.0 → 2.3-2.6 (+15-30%)
+Avg RR:         2.0 → 3.0-3.5 (+50-75%)
+Trades/Day:     5-6 → 3-4     (-30-40%)
+```
+
+---
+
+### 🟢 Phase 1: Critical Fixes (Week 5-6)
 
 #### 1.1 **Tăng Cường Yêu Cầu Sweep + BOS**
 
