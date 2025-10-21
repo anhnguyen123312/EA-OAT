@@ -1,50 +1,74 @@
 //+------------------------------------------------------------------+
 //|                                                     executor.mqh |
-//|                              Trade Execution & Session Management|
+//|                   Execution Layer - Session, Trigger, Entry      |
 //+------------------------------------------------------------------+
-#property copyright "SMC/ICT EA"
-#property version   "1.00"
+#property copyright "SMC/ICT EA v2.1"
+#property version   "2.10"
 #property strict
 
 #include "arbiter.mqh"
 
 //+------------------------------------------------------------------+
-//| Executor Class - Entry execution and session management         |
+//| Session Mode Enumerations                                        |
+//+------------------------------------------------------------------+
+enum TRADING_SESSION_MODE {
+    SESSION_FULL_DAY = 0,      // Continuous trading
+    SESSION_MULTI_WINDOW = 1   // Multiple windows with breaks
+};
+
+//+------------------------------------------------------------------+
+//| Trading Window Structure                                         |
+//+------------------------------------------------------------------+
+struct TradingWindow {
+    bool   enabled;      // Window enabled?
+    int    startHour;    // Start hour (GMT+7)
+    int    endHour;      // End hour (GMT+7)
+    string name;         // Window name
+};
+
+//+------------------------------------------------------------------+
+//| Pending Order Tracking                                           |
+//+------------------------------------------------------------------+
+struct PendingOrderInfo {
+    ulong    ticket;
+    datetime placedTime;
+    int      barsAge;
+    int      ttl;
+};
+
+//+------------------------------------------------------------------+
+//| CExecutor Class                                                   |
 //+------------------------------------------------------------------+
 class CExecutor {
 private:
     string   m_symbol;
     ENUM_TIMEFRAMES m_timeframe;
+    int      m_atrHandle;
     
     // Session parameters
-    int      m_sessStartHour;
-    int      m_sessEndHour;
+    TRADING_SESSION_MODE m_sessionMode;
+    int      m_sessStartHour;   // Full day start
+    int      m_sessEndHour;     // Full day end
+    TradingWindow m_windows[3]; // Multi-window mode
+    
+    // Market filters
     int      m_spreadMaxPts;
-    double   m_spreadATRpct;      // Spread ATR% guard
-    int      m_timezoneOffset;    // GMT offset for Asia/Ho_Chi_Minh
+    double   m_spreadATRpct;
     
     // Execution parameters
-    int      m_triggerBodyATR;    // x100 (e.g., 40 = 0.40 ATR)
+    double   m_triggerBodyATR;
     int      m_entryBufferPts;
     int      m_minStopPts;
     int      m_orderTTL_Bars;
     double   m_minRR;
     
-    // [NEW] Fixed SL/TP mode
+    // Fixed SL/TP mode
     bool     m_useFixedSL;
     int      m_fixedSL_Pips;
     bool     m_fixedTP_Enable;
     int      m_fixedTP_Pips;
     
-    // Handles
-    int      m_atrHandle;
-    
-    // Pending order tracking
-    struct PendingOrderInfo {
-        ulong    ticket;
-        datetime placedTime;
-        int      barsAge;
-    };
+    // Pending orders tracking
     PendingOrderInfo m_pendingOrders[];
     
 public:
@@ -52,24 +76,42 @@ public:
     ~CExecutor();
     
     bool Init(string symbol, ENUM_TIMEFRAMES tf,
-              int sessStart, int sessEnd, int spreadMax, double spreadATRpct,
-              int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR,
+              int fullDayStart, int fullDayEnd,
+              TRADING_SESSION_MODE sessionMode,
+              bool w1Enable, int w1Start, int w1End,
+              bool w2Enable, int w2Start, int w2End,
+              bool w3Enable, int w3Start, int w3End,
+              int spreadMax, double spreadATRpct,
+              double triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR,
               bool useFixedSL, int fixedSL_Pips, bool fixedTP_Enable, int fixedTP_Pips);
     
+    // Session management
     bool SessionOpen();
     bool SpreadOK();
     bool IsRolloverTime();
+    string GetActiveWindow();
     
+    // Trigger & Entry
     bool GetTriggerCandle(int direction, double &triggerHigh, double &triggerLow);
     bool CalculateEntry(const Candidate &c, double triggerHigh, double triggerLow,
                        double &entry, double &sl, double &tp, double &rr);
     
-    bool PlaceStopOrder(int direction, double entry, double sl, double tp, double lots, string comment);
+    // Order placement
+    bool PlaceStopOrder(int direction, double entry, double sl, double tp, 
+                       double lots, string comment);
+    bool PlaceLimitOrder(int direction, const Candidate &c, double sl, double tp,
+                        double lots, string comment);
+    
+    // Order management
     void ManagePendingOrders();
-    void SetOrderTTL(ulong ticket);
+    void SetOrderTTL(ulong ticket, int ttl);
+    
+    // Helper
+    double GetATR();
     
 private:
-    double GetATR();
+    int GetLocalHour();
+    bool ValidateWindows();
 };
 
 //+------------------------------------------------------------------+
@@ -77,11 +119,6 @@ private:
 //+------------------------------------------------------------------+
 CExecutor::CExecutor() {
     m_atrHandle = INVALID_HANDLE;
-    m_timezoneOffset = 7; // GMT+7 for Asia/Ho_Chi_Minh
-    m_useFixedSL = false;
-    m_fixedSL_Pips = 100;
-    m_fixedTP_Enable = false;
-    m_fixedTP_Pips = 200;
     ArrayResize(m_pendingOrders, 0);
 }
 
@@ -95,25 +132,60 @@ CExecutor::~CExecutor() {
 }
 
 //+------------------------------------------------------------------+
-//| Initialize executor parameters                                   |
+//| Initialize executor                                               |
 //+------------------------------------------------------------------+
 bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
-                     int sessStart, int sessEnd, int spreadMax, double spreadATRpct,
-                     int triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR,
+                     int fullDayStart, int fullDayEnd,
+                     TRADING_SESSION_MODE sessionMode,
+                     bool w1Enable, int w1Start, int w1End,
+                     bool w2Enable, int w2Start, int w2End,
+                     bool w3Enable, int w3Start, int w3End,
+                     int spreadMax, double spreadATRpct,
+                     double triggerBody, int entryBuffer, int minStop, int orderTTL, double minRR,
                      bool useFixedSL, int fixedSL_Pips, bool fixedTP_Enable, int fixedTP_Pips) {
+    
     m_symbol = symbol;
     m_timeframe = tf;
-    m_sessStartHour = sessStart;
-    m_sessEndHour = sessEnd;
+    
+    // Session configuration
+    m_sessionMode = sessionMode;
+    m_sessStartHour = fullDayStart;
+    m_sessEndHour = fullDayEnd;
+    
+    // Multi-window settings
+    m_windows[0].enabled = w1Enable;
+    m_windows[0].startHour = w1Start;
+    m_windows[0].endHour = w1End;
+    m_windows[0].name = "Asia";
+    
+    m_windows[1].enabled = w2Enable;
+    m_windows[1].startHour = w2Start;
+    m_windows[1].endHour = w2End;
+    m_windows[1].name = "London";
+    
+    m_windows[2].enabled = w3Enable;
+    m_windows[2].startHour = w3Start;
+    m_windows[2].endHour = w3End;
+    m_windows[2].name = "NY";
+    
+    // Validate configuration
+    if(!ValidateWindows()) {
+        Print("❌ Invalid window configuration");
+        return false;
+    }
+    
+    // Market filters
     m_spreadMaxPts = spreadMax;
     m_spreadATRpct = spreadATRpct;
-    m_triggerBodyATR = triggerBody;
+    
+    // Execution parameters
+    m_triggerBodyATR = triggerBody / 100.0; // Convert to decimal
     m_entryBufferPts = entryBuffer;
     m_minStopPts = minStop;
     m_orderTTL_Bars = orderTTL;
     m_minRR = minRR;
     
-    // [NEW] Fixed SL/TP mode
+    // Fixed SL/TP
     m_useFixedSL = useFixedSL;
     m_fixedSL_Pips = fixedSL_Pips;
     m_fixedTP_Enable = fixedTP_Enable;
@@ -122,7 +194,61 @@ bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
     // Create ATR handle
     m_atrHandle = iATR(m_symbol, m_timeframe, 14);
     if(m_atrHandle == INVALID_HANDLE) {
-        Print("Executor: Failed to create ATR indicator handle");
+        Print("❌ CExecutor: Failed to create ATR handle");
+        return false;
+    }
+    
+    // Log configuration
+    Print("═══════════════════════════════════════");
+    Print("📅 SESSION CONFIGURATION:");
+    Print("   Mode: ", m_sessionMode == SESSION_FULL_DAY ? "FULL DAY" : "MULTI-WINDOW");
+    
+    if(m_sessionMode == SESSION_FULL_DAY) {
+        Print("   Hours: ", m_sessStartHour, ":00 - ", m_sessEndHour, ":00 GMT+7");
+        Print("   Duration: ", m_sessEndHour - m_sessStartHour, " hours");
+    } else {
+        Print("   Windows:");
+        for(int i = 0; i < 3; i++) {
+            Print("   - ", m_windows[i].name, ": ", 
+                  m_windows[i].enabled ? "✅ ON" : "⊘ OFF",
+                  " (", m_windows[i].startHour, ":00-", m_windows[i].endHour, ":00)");
+        }
+    }
+    Print("═══════════════════════════════════════");
+    
+    Print("✅ CExecutor initialized");
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Validate window configuration                                    |
+//+------------------------------------------------------------------+
+bool CExecutor::ValidateWindows() {
+    if(m_sessionMode == SESSION_FULL_DAY) {
+        if(m_sessStartHour < 0 || m_sessStartHour > 23 ||
+           m_sessEndHour < 0 || m_sessEndHour > 24 ||
+           m_sessStartHour >= m_sessEndHour) {
+            return false;
+        }
+        return true;
+    }
+    
+    // Multi-window validation
+    bool hasEnabledWindow = false;
+    for(int i = 0; i < 3; i++) {
+        if(m_windows[i].enabled) {
+            hasEnabledWindow = true;
+            
+            if(m_windows[i].startHour < 0 || m_windows[i].startHour > 23 ||
+               m_windows[i].endHour < 0 || m_windows[i].endHour > 24 ||
+               m_windows[i].startHour >= m_windows[i].endHour) {
+                return false;
+            }
+        }
+    }
+    
+    if(!hasEnabledWindow) {
+        Print("⚠️ WARNING: No windows enabled in MULTI-WINDOW mode!");
         return false;
     }
     
@@ -130,26 +256,61 @@ bool CExecutor::Init(string symbol, ENUM_TIMEFRAMES tf,
 }
 
 //+------------------------------------------------------------------+
-//| Check if current time is within trading session                  |
+//| Get local hour (GMT+7)                                           |
 //+------------------------------------------------------------------+
-bool CExecutor::SessionOpen() {
+int CExecutor::GetLocalHour() {
     MqlDateTime s;
-    TimeToStruct(TimeCurrent(), s); // Server time
+    TimeToStruct(TimeCurrent(), s);
     
-    // [FIX] Calculate proper timezone offset
-    // VN_GMT - Server_GMT = delta to apply
     int server_gmt = (int)(TimeGMTOffset() / 3600);
     int vn_gmt = 7;
     int delta = vn_gmt - server_gmt;
     int hour_localvn = (s.hour + delta + 24) % 24;
     
-    bool inSession = (hour_localvn >= m_sessStartHour && hour_localvn < m_sessEndHour);
+    return hour_localvn;
+}
+
+//+------------------------------------------------------------------+
+//| Check if session is open                                         |
+//+------------------------------------------------------------------+
+bool CExecutor::SessionOpen() {
+    MqlDateTime s;
+    TimeToStruct(TimeCurrent(), s);
     
-    // [DEBUG] Log once per hour for verification
+    // Calculate VN time (GMT+7)
+    int server_gmt = (int)(TimeGMTOffset() / 3600);
+    int vn_gmt = 7;
+    int delta = vn_gmt - server_gmt;
+    int hour_localvn = (s.hour + delta + 24) % 24;
+    
+    bool inSession = false;
+    string sessionName = "CLOSED";
+    
+    if(m_sessionMode == SESSION_FULL_DAY) {
+        inSession = (hour_localvn >= m_sessStartHour && hour_localvn < m_sessEndHour);
+        if(inSession) sessionName = "FULL DAY";
+    }
+    else if(m_sessionMode == SESSION_MULTI_WINDOW) {
+        for(int i = 0; i < 3; i++) {
+            if(!m_windows[i].enabled) continue;
+            
+            if(hour_localvn >= m_windows[i].startHour &&
+               hour_localvn < m_windows[i].endHour) {
+                inSession = true;
+                sessionName = m_windows[i].name;
+                break;
+            }
+        }
+    }
+    
+    // Log once per hour
     static int lastLogHour = -1;
     if(s.hour != lastLogHour) {
-        Print("🕐 Session Check | Server: ", s.hour, ":00 | VN Time: ", hour_localvn, 
-              ":00 | Status: ", inSession ? "IN SESSION ✅" : "CLOSED ❌");
+        Print("🕐 Session Check | Server: ", s.hour, ":00",
+              " | VN Time: ", hour_localvn, ":00",
+              " | Mode: ", m_sessionMode == SESSION_FULL_DAY ? "FULL DAY" : "MULTI-WINDOW",
+              " | Session: ", sessionName,
+              " | Status: ", inSession ? "IN ✅" : "OUT ❌");
         lastLogHour = s.hour;
     }
     
@@ -157,42 +318,63 @@ bool CExecutor::SessionOpen() {
 }
 
 //+------------------------------------------------------------------+
-//| Check if spread is acceptable                                    |
+//| Get active window name                                           |
+//+------------------------------------------------------------------+
+string CExecutor::GetActiveWindow() {
+    if(m_sessionMode == SESSION_FULL_DAY) {
+        return "Full Day";
+    }
+    
+    int hour_localvn = GetLocalHour();
+    
+    for(int i = 0; i < 3; i++) {
+        if(!m_windows[i].enabled) continue;
+        
+        if(hour_localvn >= m_windows[i].startHour &&
+           hour_localvn < m_windows[i].endHour) {
+            return m_windows[i].name;
+        }
+    }
+    
+    return "Break/Closed";
+}
+
+//+------------------------------------------------------------------+
+//| Check spread                                                      |
 //+------------------------------------------------------------------+
 bool CExecutor::SpreadOK() {
     long spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD);
     double atr = GetATR();
     
-    // [NEW] Dynamic spread filter: accept up to max(fixed threshold, 8% of ATR)
+    // Dynamic spread filter
     if(atr > 0) {
-        long dynamicMax = (long)MathMax(m_spreadMaxPts, 0.08 * atr / _Point);
+        long dynamicMax = (long)MathMax(m_spreadMaxPts, 
+                                        m_spreadATRpct * atr / _Point);
         
         if(spread > dynamicMax) {
-            Print("⚠️ Spread too wide: ", spread, " pts (max: ", dynamicMax, " pts)");
             return false;
         }
         return true;
     }
     
-    // Fallback to static if can't get ATR
+    // Fallback to static
     if(spread > m_spreadMaxPts) {
-        Print("⚠️ Spread too wide: ", spread, " pts (max: ", m_spreadMaxPts, " pts)");
         return false;
     }
     return true;
 }
 
 //+------------------------------------------------------------------+
-//| Check if it's rollover time (avoid trading ±5 min around 00:00) |
+//| Check if rollover time                                           |
 //+------------------------------------------------------------------+
 bool CExecutor::IsRolloverTime() {
-    datetime t = TimeCurrent();
     MqlDateTime s;
-    TimeToStruct(t, s);
+    TimeToStruct(TimeCurrent(), s);
     
-    // Check if within 5 minutes of midnight server time
     int minutesFromMidnight = s.hour * 60 + s.min;
-    if(minutesFromMidnight < 5 || minutesFromMidnight > 1435) { // 23:55 = 1435 minutes
+    
+    // Within 5 min of midnight
+    if(minutesFromMidnight < 5 || minutesFromMidnight > 1435) {
         return true;
     }
     
@@ -200,28 +382,15 @@ bool CExecutor::IsRolloverTime() {
 }
 
 //+------------------------------------------------------------------+
-//| Get ATR value                                                     |
-//+------------------------------------------------------------------+
-double CExecutor::GetATR() {
-    double atr[];
-    ArraySetAsSeries(atr, true);
-    if(CopyBuffer(m_atrHandle, 0, 0, 2, atr) > 0) {
-        return atr[0];
-    }
-    return 0;
-}
-
-//+------------------------------------------------------------------+
-//| Get trigger candle for entry                                     |
+//| Get trigger candle                                               |
 //+------------------------------------------------------------------+
 bool CExecutor::GetTriggerCandle(int direction, double &triggerHigh, double &triggerLow) {
     double atr = GetATR();
     if(atr <= 0) return false;
     
-    // [CHANGE] Lower threshold: 25% of ATR or minimum 30 points (3 pips)
-    double minBodySize = MathMax((m_triggerBodyATR / 100.0) * atr, 30.0 * _Point);
+    double minBodySize = MathMax(m_triggerBodyATR * atr, 30.0 * _Point);
     
-    // [CHANGE] Scan bars 0-3 instead of just 0-1
+    // Scan bars 0-3
     for(int i = 0; i <= 3; i++) {
         double open = iOpen(m_symbol, m_timeframe, i);
         double close = iClose(m_symbol, m_timeframe, i);
@@ -230,31 +399,26 @@ bool CExecutor::GetTriggerCandle(int direction, double &triggerHigh, double &tri
         double bodySize = MathAbs(close - open);
         
         if(bodySize >= minBodySize) {
-            // For sell setup, need bearish trigger
             if(direction == -1 && close < open) {
+                // Bearish trigger for SELL
                 triggerHigh = high;
                 triggerLow = low;
-                Print("🎯 Trigger SELL: Bar ", i, " | Body: ", (int)(bodySize/_Point), 
-                      " pts (min: ", (int)(minBodySize/_Point), " pts)");
                 return true;
             }
-            // For buy setup, need bullish trigger
             else if(direction == 1 && close > open) {
+                // Bullish trigger for BUY
                 triggerHigh = high;
                 triggerLow = low;
-                Print("🎯 Trigger BUY: Bar ", i, " | Body: ", (int)(bodySize/_Point), 
-                      " pts (min: ", (int)(minBodySize/_Point), " pts)");
                 return true;
             }
         }
     }
     
-    Print("❌ No trigger candle found (scanned bars 0-3)");
     return false;
 }
 
 //+------------------------------------------------------------------+
-//| Calculate entry, SL, TP and RR for candidate                     |
+//| Calculate Entry, SL, TP                                          |
 //+------------------------------------------------------------------+
 bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double triggerLow,
                                double &entry, double &sl, double &tp, double &rr) {
@@ -264,13 +428,11 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
     double atr = GetATR();
     
     if(c.direction == 1) {
-        // BUY setup
+        // BUY SETUP
         entry = triggerHigh + buffer;
         
-        // [STEP 1] Calculate METHOD-based SL & TP first
+        // Calculate METHOD-based SL
         double methodSL = 0;
-        double methodTP = 0;
-        
         if(c.hasSweep) {
             methodSL = c.sweepLevel - buffer;
         } else if(c.hasOB || c.hasFVG) {
@@ -279,47 +441,39 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             return false;
         }
         
-        // Ensure minimum stop distance for method SL
+        // Ensure minimum stop distance
         double slDistance = entry - methodSL;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             methodSL = entry - minStopDistance;
         }
         
-        // Calculate method-based TP (RR-based on method SL)
+        // Calculate METHOD-based TP
         double methodRisk = entry - methodSL;
-        methodTP = entry + (methodRisk * m_minRR);
+        double methodTP = entry + (methodRisk * m_minRR);
         
-        // [STEP 2] Apply FIXED SL if enabled (ưu tiên config)
+        // Apply FIXED SL if enabled
         if(m_useFixedSL) {
             double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
             sl = entry - fixedSL_Distance;
-            Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips (override method)");
         } else {
             sl = methodSL;
-            Print("🎯 METHOD SL: ", (int)((entry - sl)/_Point/10), " pips (from structure)");
         }
         
-        // [STEP 3] TP: Luôn dùng PHƯƠNG PHÁP (không theo RR của Fixed SL)
+        // Apply FIXED TP if enabled
         if(m_fixedTP_Enable) {
-            // Fixed TP absolute
             double fixedTP_Distance = m_fixedTP_Pips * 10 * _Point;
             tp = entry + fixedTP_Distance;
-            Print("📌 FIXED TP: ", m_fixedTP_Pips, " pips (absolute)");
         } else {
-            // TP từ phương pháp (không phụ thuộc Fixed SL)
             tp = methodTP;
-            Print("🎯 METHOD TP: ", (int)((tp - entry)/_Point/10), " pips (from method RR)");
         }
-        
-    } else if(c.direction == -1) {
-        // SELL setup
+    }
+    else if(c.direction == -1) {
+        // SELL SETUP
         entry = triggerLow - buffer;
         
-        // [STEP 1] Calculate METHOD-based SL & TP first
+        // Calculate METHOD-based SL
         double methodSL = 0;
-        double methodTP = 0;
-        
         if(c.hasSweep) {
             methodSL = c.sweepLevel + buffer;
         } else if(c.hasOB || c.hasFVG) {
@@ -328,39 +482,32 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             return false;
         }
         
-        // Ensure minimum stop distance for method SL
+        // Ensure minimum stop distance
         double slDistance = methodSL - entry;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             methodSL = entry + minStopDistance;
         }
         
-        // Calculate method-based TP (RR-based on method SL)
+        // Calculate METHOD-based TP
         double methodRisk = methodSL - entry;
-        methodTP = entry - (methodRisk * m_minRR);
+        double methodTP = entry - (methodRisk * m_minRR);
         
-        // [STEP 2] Apply FIXED SL if enabled (ưu tiên config)
+        // Apply FIXED SL if enabled
         if(m_useFixedSL) {
             double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
             sl = entry + fixedSL_Distance;
-            Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips (override method)");
         } else {
             sl = methodSL;
-            Print("🎯 METHOD SL: ", (int)((sl - entry)/_Point/10), " pips (from structure)");
         }
         
-        // [STEP 3] TP: Luôn dùng PHƯƠNG PHÁP (không theo RR của Fixed SL)
+        // Apply FIXED TP if enabled
         if(m_fixedTP_Enable) {
-            // Fixed TP absolute
             double fixedTP_Distance = m_fixedTP_Pips * 10 * _Point;
             tp = entry - fixedTP_Distance;
-            Print("📌 FIXED TP: ", m_fixedTP_Pips, " pips (absolute)");
         } else {
-            // TP từ phương pháp (không phụ thuộc Fixed SL)
             tp = methodTP;
-            Print("🎯 METHOD TP: ", (int)((entry - tp)/_Point/10), " pips (from method RR)");
         }
-        
     } else {
         return false;
     }
@@ -370,26 +517,20 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
     sl = NormalizeDouble(sl, _Digits);
     tp = NormalizeDouble(tp, _Digits);
     
-    // Calculate actual RR
-    // [FIX] Prevent divide by zero
+    // Calculate RR
     if(c.direction == 1) {
         double denominator = entry - sl;
-        if(MathAbs(denominator) < _Point) {
-            Print("❌ Invalid entry/SL: too close together");
-            return false;
-        }
+        if(MathAbs(denominator) < _Point) return false;
         rr = (tp - entry) / denominator;
     } else {
         double denominator = sl - entry;
-        if(MathAbs(denominator) < _Point) {
-            Print("❌ Invalid entry/SL: too close together");
-            return false;
-        }
+        if(MathAbs(denominator) < _Point) return false;
         rr = (entry - tp) / denominator;
     }
     
-    // Check if RR meets minimum
+    // Check minimum RR
     if(rr < m_minRR) {
+        Print("❌ RR too low: ", DoubleToString(rr, 2), " (min: ", m_minRR, ")");
         return false;
     }
     
@@ -397,9 +538,10 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
 }
 
 //+------------------------------------------------------------------+
-//| Place stop order                                                  |
+//| Place Stop Order                                                  |
 //+------------------------------------------------------------------+
-bool CExecutor::PlaceStopOrder(int direction, double entry, double sl, double tp, double lots, string comment) {
+bool CExecutor::PlaceStopOrder(int direction, double entry, double sl, double tp,
+                               double lots, string comment) {
     if(!SessionOpen() || !SpreadOK() || IsRolloverTime()) {
         return false;
     }
@@ -421,18 +563,16 @@ bool CExecutor::PlaceStopOrder(int direction, double entry, double sl, double tp
     
     if(direction == 1) {
         request.type = ORDER_TYPE_BUY_STOP;
-        // Adjust entry if too close to current price
         double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
         if(entry <= ask) {
-            Print("Buy stop entry too close to current price");
+            Print("❌ Buy stop entry too close to current price");
             return false;
         }
     } else if(direction == -1) {
         request.type = ORDER_TYPE_SELL_STOP;
-        // Adjust entry if too close to current price
         double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
         if(entry >= bid) {
-            Print("Sell stop entry too close to current price");
+            Print("❌ Sell stop entry too close to current price");
             return false;
         }
     } else {
@@ -442,37 +582,126 @@ bool CExecutor::PlaceStopOrder(int direction, double entry, double sl, double tp
     bool sent = OrderSend(request, result);
     
     if(sent && result.retcode == TRADE_RETCODE_DONE) {
-        Print("Order placed successfully: ", result.order);
-        SetOrderTTL(result.order);
+        Print("✅ Stop order placed: #", result.order);
+        SetOrderTTL(result.order, m_orderTTL_Bars);
         return true;
     } else {
-        Print("Order failed: ", result.retcode, " - ", result.comment);
+        Print("❌ Order failed: ", result.retcode, " - ", result.comment);
         return false;
     }
 }
 
 //+------------------------------------------------------------------+
-//| Set TTL for pending order                                        |
+//| Place Limit Order (v2.1)                                         |
 //+------------------------------------------------------------------+
-void CExecutor::SetOrderTTL(ulong ticket) {
-    int size = ArraySize(m_pendingOrders);
-    ArrayResize(m_pendingOrders, size + 1);
-    m_pendingOrders[size].ticket = ticket;
-    m_pendingOrders[size].placedTime = TimeCurrent();
-    m_pendingOrders[size].barsAge = 0;
+bool CExecutor::PlaceLimitOrder(int direction, const Candidate &c, double sl, double tp,
+                                double lots, string comment) {
+    if(!SessionOpen() || !SpreadOK() || IsRolloverTime()) {
+        return false;
+    }
+    
+    MqlTradeRequest request;
+    MqlTradeResult result;
+    ZeroMemory(request);
+    ZeroMemory(result);
+    
+    request.action = TRADE_ACTION_PENDING;
+    request.symbol = m_symbol;
+    request.volume = NormalizeDouble(lots, 2);
+    request.sl = sl;
+    request.tp = tp;
+    request.deviation = 20;
+    request.magic = 20251013;
+    request.comment = comment;
+    
+    double entryPrice = 0;
+    
+    if(direction == 1) {
+        // BUY LIMIT: Enter at OB bottom or FVG bottom
+        if(c.hasOB) {
+            entryPrice = c.poiBottom;
+        } else if(c.hasFVG) {
+            entryPrice = c.fvgBottom;
+        } else {
+            return false;
+        }
+        
+        // Validate: Entry must be BELOW current price
+        double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+        if(entryPrice >= currentPrice) {
+            Print("❌ Limit entry >= current price");
+            return false;
+        }
+        
+        request.type = ORDER_TYPE_BUY_LIMIT;
+        request.price = entryPrice;
+    }
+    else if(direction == -1) {
+        // SELL LIMIT: Enter at OB top or FVG top
+        if(c.hasOB) {
+            entryPrice = c.poiTop;
+        } else if(c.hasFVG) {
+            entryPrice = c.fvgTop;
+        } else {
+            return false;
+        }
+        
+        // Validate: Entry must be ABOVE current price
+        double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+        if(entryPrice <= currentPrice) {
+            Print("❌ Limit entry <= current price");
+            return false;
+        }
+        
+        request.type = ORDER_TYPE_SELL_LIMIT;
+        request.price = entryPrice;
+    } else {
+        return false;
+    }
+    
+    bool sent = OrderSend(request, result);
+    
+    if(sent && result.retcode == TRADE_RETCODE_DONE) {
+        Print("✅ Limit order placed: #", result.order, " at ", entryPrice);
+        SetOrderTTL(result.order, 24); // Longer TTL for limit orders
+        return true;
+    } else {
+        Print("❌ Limit order failed: ", result.retcode);
+        return false;
+    }
 }
 
 //+------------------------------------------------------------------+
-//| Manage pending orders - cancel if TTL expired                    |
+//| Set order TTL                                                     |
+//+------------------------------------------------------------------+
+void CExecutor::SetOrderTTL(ulong ticket, int ttl) {
+    int size = ArraySize(m_pendingOrders);
+    ArrayResize(m_pendingOrders, size + 1);
+    
+    m_pendingOrders[size].ticket = ticket;
+    m_pendingOrders[size].placedTime = TimeCurrent();
+    m_pendingOrders[size].barsAge = 0;
+    m_pendingOrders[size].ttl = ttl;
+}
+
+//+------------------------------------------------------------------+
+//| Manage pending orders (TTL)                                      |
 //+------------------------------------------------------------------+
 void CExecutor::ManagePendingOrders() {
-    datetime currentTime = TimeCurrent();
-    int currentBar = iBars(m_symbol, m_timeframe);
-    
     for(int i = ArraySize(m_pendingOrders) - 1; i >= 0; i--) {
+        ulong ticket = m_pendingOrders[i].ticket;
+        
         // Check if order still exists
-        if(!OrderSelect(m_pendingOrders[i].ticket)) {
-            // Order was filled or cancelled, remove from tracking
+        bool orderExists = false;
+        for(int j = 0; j < OrdersTotal(); j++) {
+            if(OrderGetTicket(j) == ticket) {
+                orderExists = true;
+                break;
+            }
+        }
+        
+        if(!orderExists) {
+            // Order filled or cancelled
             ArrayRemove(m_pendingOrders, i, 1);
             continue;
         }
@@ -484,22 +713,33 @@ void CExecutor::ManagePendingOrders() {
         m_pendingOrders[i].barsAge = orderBar - currentBar;
         
         // Check TTL
-        if(m_pendingOrders[i].barsAge >= m_orderTTL_Bars) {
-            // Cancel order
+        if(m_pendingOrders[i].barsAge >= m_pendingOrders[i].ttl) {
             MqlTradeRequest request;
             MqlTradeResult result;
             ZeroMemory(request);
             ZeroMemory(result);
             
             request.action = TRADE_ACTION_REMOVE;
-            request.order = m_pendingOrders[i].ticket;
+            request.order = ticket;
             
             if(OrderSend(request, result)) {
-                Print("Order ", m_pendingOrders[i].ticket, " cancelled due to TTL");
+                Print("⏰ Order #", ticket, " cancelled (TTL expired)");
             }
             
             ArrayRemove(m_pendingOrders, i, 1);
         }
     }
+}
+
+//+------------------------------------------------------------------+
+//| Get ATR value                                                     |
+//+------------------------------------------------------------------+
+double CExecutor::GetATR() {
+    double atr[];
+    ArraySetAsSeries(atr, true);
+    if(CopyBuffer(m_atrHandle, 0, 0, 1, atr) <= 0) {
+        return 0;
+    }
+    return atr[0];
 }
 
