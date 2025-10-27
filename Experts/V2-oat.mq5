@@ -84,64 +84,72 @@ input double InpEquityPerLotInc = 1000.0;  // Equity per lot inc ($)
 input double InpLotIncrement    = 0.1;     // Lot increment
 
 //+------------------------------------------------------------------+
-//| BOS Detection                                                    |
+//| SWING DETECTION (UPDATED - from update.md)                       |
 //+------------------------------------------------------------------+
-input group "═══════ BOS Detection ═══════"
-input int    InpFractalK        = 3;     // Fractal K
-input int    InpLookbackSwing   = 50;    // Lookback (bars)
-input double InpMinBodyATR      = 0.6;   // Min body (ATR multiple)
-input int    InpMinBreakPts     = 400;   // Min break (points) - M30: 40 pips (research×2 from M5)
-input int    InpBOS_TTL         = 60;    // TTL (bars)
+input group "═══════ SWING DETECTION ═══════"
+input int    InpFractalK        = 5;     // Fractal Depth (K-bars left/right) - XAUUSD M30: K=5 recommended
+input int    InpLookbackSwing   = 100;   // Lookback Window (bars) - M30: 100 bars = ~3 days
 
 //+------------------------------------------------------------------+
-//| BOS Retest (v2.1)                                                |
+//| BOS Detection (UPDATED - from update.md)                         |
+//+------------------------------------------------------------------+
+input group "═══════ BREAK OF STRUCTURE ═══════"
+input double InpMinBodyATR      = 0.8;   // Min Candle Body (× ATR) - XAUUSD: 0.8 filters noise
+input int    InpMinBreakPts     = 150;   // Min Break Distance (points = 15 pips) - Meaningful BOS
+input int    InpBOS_TTL         = 60;    // BOS Time-To-Live (bars)
+
+//+------------------------------------------------------------------+
+//| BOS Retest (v2.1 - UPDATED from update.md)                       |
 //+------------------------------------------------------------------+
 input group "═══════ BOS Retest (v2.1) ═══════"
 input bool   InpBOSTrackRetest    = true;    // Track BOS retest
-input int    InpBOSRetestTolerance= 300;     // Retest zone (points) - M30: 30 pips (research buffer)
+input int    InpBOSRetestTolerance= 150;     // Retest zone (points = 15 pips) - Retest buffer
 input int    InpBOSRetestMinGap   = 3;       // Min bars between retest
 
 //+------------------------------------------------------------------+
-//| Liquidity Sweep                                                  |
+//| Liquidity Sweep (UPDATED - from update.md)                       |
 //+------------------------------------------------------------------+
-input group "═══════ Liquidity Sweep ═══════"
-input int    InpLookbackLiq     = 40;    // Lookback (bars)
-input double InpMinWickPct      = 35.0;  // Min wick (%)
-input int    InpSweep_TTL       = 24;    // TTL (bars)
+input group "═══════ LIQUIDITY SWEEP ═══════"
+input int    InpLookbackLiq     = 40;    // Lookback for Fractals (bars) - M30: 40 bars = 20h
+input double InpMinWickPct      = 40.0;  // Min Wick Size (% of range) - Wick >= 40% = rejection
+input int    InpSweep_TTL       = 50;    // Sweep TTL (bars)
 
 //+------------------------------------------------------------------+
-//| Order Block                                                      |
+//| Order Block (UPDATED - from update.md with dynamic sizing)       |
 //+------------------------------------------------------------------+
-input group "═══════ Order Block ═══════"
-input int    InpOB_MaxTouches   = 3;     // Max touches
-input int    InpOB_BufferInvPts = 300;   // Invalidation buffer (pts) - M30: 30 pips (research)
-input int    InpOB_TTL          = 160;   // TTL (bars)
-input double InpOB_VolMultiplier= 1.3;   // Strong OB threshold
+input group "═══════ ORDER BLOCK CONFIG ═══════"
+input bool   InpOB_UseDynamicSize = true;     // Use ATR-Based Sizing?
+input int    InpOB_MinSizePts     = 200;      // Fixed Min Size (points = 20 pips) if dynamic=false
+input double InpOB_ATRMultiplier  = 0.35;     // ATR Multiplier (if dynamic=true) - ~7 pips when ATR=20
+input int    InpOB_MaxTouches     = 3;        // Max touches
+input double InpOB_VolMultiplier  = 1.5;      // Min Volume (× average) - OB strength threshold
+input int    InpOB_BufferInvPts   = 50;       // Invalidation Buffer (points = 5 pips)
+input int    InpOB_TTL            = 100;      // OB Time-To-Live (bars)
 
 //+------------------------------------------------------------------+
-//| OB Sweep Validation (v2.1)                                       |
+//| OB Sweep Validation (v2.1 - UPDATED from update.md)              |
 //+------------------------------------------------------------------+
 input group "═══════ OB Sweep Validation (v2.1) ═══════"
-input int    InpOBSweepMaxDist    = 600;     // Max sweep distance (pts) - M30: 60 pips (research×2)
+input int    InpOBSweepMaxDist    = 500;     // Max sweep distance (pts = 50 pips) - Nearby sweep
 
 //+------------------------------------------------------------------+
-//| Fair Value Gap                                                   |
+//| Fair Value Gap (UPDATED - from update.md)                        |
 //+------------------------------------------------------------------+
-input group "═══════ Fair Value Gap ═══════"
-input int    InpFVG_MinPts      = 200;   // Min size (points) - M30: 20 pips (research×2 from M5 100pts)
+input group "═══════ FAIR VALUE GAP ═══════"
+input int    InpFVG_MinPts      = 100;   // Min FVG Size (points = 10 pips) - Tradeable imbalance
 input double InpFVG_FillMinPct  = 25.0;  // Min fill (%)
-input double InpFVG_MitigatePct = 35.0;  // Mitigation (%)
+input double InpFVG_MitigatePct = 50.0;  // Mitigation Threshold (%) - 50% fill = partial mitigation
 input double InpFVG_CompletePct = 85.0;  // Completion (%)
-input int    InpFVG_BufferInvPt = 300;   // Invalidation buffer (pts) - M30: 30 pips (research)
-input int    InpFVG_TTL         = 70;    // TTL (bars)
+input int    InpFVG_BufferInvPt = 200;   // Invalidation buffer (pts) - M30: 20 pips
+input int    InpFVG_TTL         = 80;    // FVG Time-To-Live (bars)
 input int    InpFVG_KeepSide    = 6;     // Max FVGs per side
 
 //+------------------------------------------------------------------+
-//| FVG MTF Overlap (v2.1)                                           |
+//| FVG MTF Overlap (v2.1 - UPDATED from update.md)                  |
 //+------------------------------------------------------------------+
 input group "═══════ FVG MTF Overlap (v2.1) ═══════"
-input double InpFVGTolerance      = 300;     // Tolerance (points) - M30: 30 pips
-input int    InpFVGHTFMinSize     = 400;     // HTF FVG min size (pts) - M30: 40 pips (scaled from M5)
+input double InpFVGTolerance      = 200;     // Tolerance (points = 20 pips) - MTF overlap buffer
+input int    InpFVGHTFMinSize     = 800;     // HTF FVG min size (pts = 80 pips) - Significant HTF FVG
 
 //+------------------------------------------------------------------+
 //| Momentum                                                         |
@@ -152,12 +160,12 @@ input int    InpMomo_FailBars   = 4;     // Bars to confirm/fail
 input int    InpMomo_TTL        = 20;    // TTL (bars)
 
 //+------------------------------------------------------------------+
-//| Execution                                                        |
+//| Execution (UPDATED - from update.md)                             |
 //+------------------------------------------------------------------+
 input group "═══════ Execution ═══════"
 input int    InpTriggerBodyATR  = 30;    // Trigger body (0.30 ATR)
-input int    InpEntryBufferPts  = 300;   // Entry buffer (points) - M30: 30 pips (research line 102)
-input int    InpMinStopPts      = 500;   // Min stop (points) - M30: 50 pips (research×2)
+input int    InpEntryBufferPts  = 200;   // Entry buffer (points = 20 pips) - Entry spacing
+input int    InpMinStopPts      = 1000;  // Min stop (points = 100 pips) - Realistic SL for XAUUSD
 input int    InpOrder_TTL_Bars  = 16;    // Pending order TTL (bars)
 
 //+------------------------------------------------------------------+
@@ -262,7 +270,8 @@ int OnInit() {
                         InpFVG_CompletePct, InpFVG_BufferInvPt, InpFVG_TTL, InpFVG_KeepSide,
                         InpMomo_MinDispATR, InpMomo_FailBars, InpMomo_TTL,
                         InpBOSRetestTolerance, InpBOSRetestMinGap,
-                        InpOBSweepMaxDist, InpFVGTolerance, InpFVGHTFMinSize)) {
+                        InpOBSweepMaxDist, InpFVGTolerance, InpFVGHTFMinSize,
+                        InpOB_UseDynamicSize, InpOB_MinSizePts, InpOB_ATRMultiplier)) {
         Print("❌ ERROR: Failed to initialize detector");
         return INIT_FAILED;
     }

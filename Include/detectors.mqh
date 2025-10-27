@@ -52,6 +52,7 @@ struct OrderBlock {
     double   sweepLevel;        // Sweep price
     int      sweepDistancePts;  // Distance in points
     double   sweepQuality;      // 0-1 quality score
+    double   size;              // Actual OB size (high - low)
 };
 
 // Fair Value Gap Signal
@@ -139,6 +140,11 @@ private:
     int      m_obSweepMaxDist;
     double   m_fvgTolerance;
     int      m_fvgHTFMinSize;
+    
+    // OB dynamic sizing (from update.md)
+    bool     m_ob_UseDynamicSize;
+    int      m_ob_MinSizePts;
+    double   m_ob_ATRMultiplier;
 
 public:
     CDetector();
@@ -152,7 +158,8 @@ public:
               double fvg_CompletePct, int fvg_BufferInvPt, int fvg_TTL, int fvg_KeepSide,
               double momo_MinDispATR, int momo_FailBars, int momo_TTL,
               int bosRetestTolerance, int bosRetestMinGap,
-              int obSweepMaxDist, double fvgTolerance, int fvgHTFMinSize);
+              int obSweepMaxDist, double fvgTolerance, int fvgHTFMinSize,
+              bool ob_UseDynamicSize, int ob_MinSizePts, double ob_ATRMultiplier);
     
     void UpdateSeries();
     
@@ -216,7 +223,8 @@ bool CDetector::Init(string symbol, ENUM_TIMEFRAMES tf,
                      double fvg_CompletePct, int fvg_BufferInvPt, int fvg_TTL, int fvg_KeepSide,
                      double momo_MinDispATR, int momo_FailBars, int momo_TTL,
                      int bosRetestTolerance, int bosRetestMinGap,
-                     int obSweepMaxDist, double fvgTolerance, int fvgHTFMinSize) {
+                     int obSweepMaxDist, double fvgTolerance, int fvgHTFMinSize,
+                     bool ob_UseDynamicSize, int ob_MinSizePts, double ob_ATRMultiplier) {
     
     m_symbol = symbol;
     m_timeframe = tf;
@@ -260,6 +268,11 @@ bool CDetector::Init(string symbol, ENUM_TIMEFRAMES tf,
     m_fvgTolerance = fvgTolerance;
     m_fvgHTFMinSize = fvgHTFMinSize;
     
+    // OB dynamic sizing parameters
+    m_ob_UseDynamicSize = ob_UseDynamicSize;
+    m_ob_MinSizePts = ob_MinSizePts;
+    m_ob_ATRMultiplier = ob_ATRMultiplier;
+    
     // Create ATR indicator
     m_atrHandle = iATR(m_symbol, m_timeframe, 14);
     if(m_atrHandle == INVALID_HANDLE) {
@@ -296,71 +309,141 @@ double CDetector::GetATR() {
 }
 
 //+------------------------------------------------------------------+
-//| Check if bar is swing high                                       |
+//| Check if bar is swing high (FIXED - No lookahead)                |
 //+------------------------------------------------------------------+
 bool CDetector::IsSwingHigh(int index, int K) {
-    if(index - K < 0 || index + K >= ArraySize(m_high)) return false;
+    // [FIX BUG #1] Cần >= 2*K để có K bars confirmation bên phải
+    // VD: K=5 → index phải >= 10 (bar 10 trở về trước)
+    if(index < 2 * K) {
+        return false; // Chưa đủ confirmation
+    }
+    
+    // Boundary check
+    if(index >= ArraySize(m_high)) {
+        return false;
+    }
     
     double h = m_high[index];
+    
+    // Check K bars BÊN TRÁI (bars confirmed trước đó)
     for(int k = 1; k <= K; k++) {
-        if(h <= m_high[index - k] || h <= m_high[index + k]) {
+        if(index - k < 0) return false;
+        
+        // [FIX BUG #3] Dùng < thay vì <= để allow tie-cases
+        if(h < m_high[index - k]) {
             return false;
         }
     }
+    
+    // Check K bars BÊN PHẢI (bars ĐÃ confirmed - không phải future!)
+    for(int k = 1; k <= K; k++) {
+        if(index + k >= ArraySize(m_high)) return false;
+        
+        // [FIX BUG #3] Dùng < thay vì <= để allow tie-cases
+        if(h < m_high[index + k]) {
+            return false;
+        }
+    }
+    
     return true;
 }
 
 //+------------------------------------------------------------------+
-//| Check if bar is swing low                                        |
+//| Check if bar is swing low (FIXED - No lookahead)                 |
 //+------------------------------------------------------------------+
 bool CDetector::IsSwingLow(int index, int K) {
-    if(index - K < 0 || index + K >= ArraySize(m_low)) return false;
+    // [FIX BUG #1] Same logic as IsSwingHigh
+    if(index < 2 * K) {
+        return false; // Chưa đủ confirmation
+    }
+    
+    // Boundary check
+    if(index >= ArraySize(m_low)) {
+        return false;
+    }
     
     double l = m_low[index];
+    
+    // Check K bars BÊN TRÁI
     for(int k = 1; k <= K; k++) {
-        if(l >= m_low[index - k] || l >= m_low[index + k]) {
+        if(index - k < 0) return false;
+        
+        // [FIX BUG #3] Dùng > thay vì >= để allow tie-cases
+        if(l > m_low[index - k]) {
             return false;
         }
     }
+    
+    // Check K bars BÊN PHẢI (confirmed)
+    for(int k = 1; k <= K; k++) {
+        if(index + k >= ArraySize(m_low)) return false;
+        
+        // [FIX BUG #3] Dùng > thay vì >= để allow tie-cases
+        if(l > m_low[index + k]) {
+            return false;
+        }
+    }
+    
     return true;
 }
 
 //+------------------------------------------------------------------+
-//| Find last swing high                                             |
+//| Find last swing high (FIXED - Proper confirmation)               |
 //+------------------------------------------------------------------+
 Swing CDetector::FindLastSwingHigh(int lookback, int K) {
     Swing swing;
     swing.valid = false;
     
-    for(int i = K + 1; i < lookback; i++) {
+    // [FIX BUG #2] Bắt đầu từ 2*K thay vì K+1
+    // VD: K=5 → start từ bar 10 (có đủ 5 bars confirmation)
+    int startIdx = 2 * K;
+    
+    // [GUARD] Nếu lookback quá nhỏ
+    if(lookback <= startIdx) {
+        return swing; // Invalid
+    }
+    
+    // Scan từ gần đến xa (tìm swing GẦN NHẤT)
+    for(int i = startIdx; i < lookback; i++) {
         if(IsSwingHigh(i, K)) {
             swing.valid = true;
             swing.index = i;
             swing.price = m_high[i];
             swing.time = iTime(m_symbol, m_timeframe, i);
-            return swing;
+            return swing; // Return NGAY swing đầu tiên tìm được
         }
     }
-    return swing;
+    
+    return swing; // Không tìm thấy
 }
 
 //+------------------------------------------------------------------+
-//| Find last swing low                                              |
+//| Find last swing low (FIXED - Proper confirmation)                |
 //+------------------------------------------------------------------+
 Swing CDetector::FindLastSwingLow(int lookback, int K) {
     Swing swing;
     swing.valid = false;
     
-    for(int i = K + 1; i < lookback; i++) {
+    // [FIX BUG #2] Same logic
+    int startIdx = 2 * K;
+    
+    // [GUARD] Nếu lookback quá nhỏ
+    if(lookback <= startIdx) {
+        return swing; // Invalid
+    }
+    
+    // Scan từ gần đến xa
+    for(int i = startIdx; i < lookback; i++) {
         if(IsSwingLow(i, K)) {
             swing.valid = true;
             swing.index = i;
             swing.price = m_low[i];
             swing.time = iTime(m_symbol, m_timeframe, i);
-            return swing;
+            return swing; // Return NGAY swing đầu tiên
         }
     }
-    return swing;
+    
+    return swing; // Không tìm thấy
 }
 
 //+------------------------------------------------------------------+
@@ -487,16 +570,32 @@ SweepSignal CDetector::DetectSweep() {
 }
 
 //+------------------------------------------------------------------+
-//| Find Order Block                                                 |
+//| Find Order Block (FIXED - With min size validation)              |
 //+------------------------------------------------------------------+
 OrderBlock CDetector::FindOB(int direction) {
     OrderBlock ob;
     ob.valid = false;
     ob.hasSweepNearby = false;
     ob.sweepQuality = 0.0;
+    ob.size = 0.0;
     
     int startIdx = 5;
     int endIdx = 80;
+    
+    // Get ATR for dynamic sizing
+    double atr = GetATR();
+    if(atr <= 0) return ob; // Guard
+    
+    // [NEW] Calculate min OB size (fixed or dynamic)
+    double minOBSize = 0;
+    
+    if(m_ob_UseDynamicSize) {
+        // Dynamic: based on ATR
+        minOBSize = atr * m_ob_ATRMultiplier;
+    } else {
+        // Fixed: based on points
+        minOBSize = m_ob_MinSizePts * _Point;
+    }
     
     // Calculate avg volume
     long sumVol = 0;
@@ -513,6 +612,12 @@ OrderBlock CDetector::FindOB(int direction) {
         
         // Looking for BULLISH OB (demand)
         if(direction == 1 && isBearish) {
+            // [NEW] Check OB size BEFORE other validations
+            double obSize = m_high[i] - m_low[i];
+            if(obSize < minOBSize) {
+                continue; // OB quá nhỏ, skip
+            }
+            
             // Check displacement (rally after this bearish candle)
             if(i >= 2 && m_close[i-1] > m_high[i+1]) {
                 ob.valid = true;
@@ -521,6 +626,7 @@ OrderBlock CDetector::FindOB(int direction) {
                 ob.priceTop = m_close[i];
                 ob.createdTime = iTime(m_symbol, m_timeframe, i);
                 ob.volume = m_volume[i];
+                ob.size = obSize; // Store actual size
                 
                 // Check volume strength
                 ob.weak = (avgVol > 0) && (m_volume[i] < avgVol * m_ob_VolMultiplier);
@@ -543,6 +649,12 @@ OrderBlock CDetector::FindOB(int direction) {
         }
         // Looking for BEARISH OB (supply)
         else if(direction == -1 && isBullish) {
+            // [NEW] Check OB size
+            double obSize = m_high[i] - m_low[i];
+            if(obSize < minOBSize) {
+                continue; // OB quá nhỏ, skip
+            }
+            
             // Check displacement (drop after this bullish candle)
             if(i >= 2 && m_close[i-1] < m_low[i+1]) {
                 ob.valid = true;
@@ -551,6 +663,7 @@ OrderBlock CDetector::FindOB(int direction) {
                 ob.priceTop = m_high[i];
                 ob.createdTime = iTime(m_symbol, m_timeframe, i);
                 ob.volume = m_volume[i];
+                ob.size = obSize; // Store actual size
                 
                 // Check volume strength
                 ob.weak = (avgVol > 0) && (m_volume[i] < avgVol * m_ob_VolMultiplier);
