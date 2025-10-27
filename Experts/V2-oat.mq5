@@ -14,10 +14,12 @@
 #include "..\Include\draw_debug.mqh"
 
 //+------------------------------------------------------------------+
-//| Input Parameters - Unit Convention                               |
+//| Input Parameters - Unit Convention (per fix.md)                  |
 //+------------------------------------------------------------------+
 input group "═══════ Unit Convention ═══════"
 input int InpPointsPerPip = 10;  // Points per pip (10 or 100)
+sinput string InpNote_Units = "XAUUSD: 10 points = 1 pip | Use points everywhere";
+sinput string InpNote_Example = "Example: 1000 points = 100 pips | _Point = 0.001";
 
 //+------------------------------------------------------------------+
 //| Session Mode Configuration                                       |
@@ -60,7 +62,7 @@ input int  InpWindow3_End    = 23;     // End hour (GMT+7)
 //| Market Filters                                                   |
 //+------------------------------------------------------------------+
 input group "═══════ Market Filters ═══════"
-input int    InpSpreadMaxPts  = 500;   // Max spread (points)
+input int    InpSpreadMaxPts  = 500;   // Max spread (points) | ~50 pips XAUUSD
 input double InpSpreadATRpct  = 0.08;  // Spread ATR% guard
 
 //+------------------------------------------------------------------+
@@ -75,13 +77,15 @@ input bool   InpUseEquityMDD    = true;  // Use Equity for MDD
 input int    InpDailyResetHour  = 6;     // Daily reset hour (GMT+7)
 
 //+------------------------------------------------------------------+
-//| Dynamic Lot Sizing                                               |
+//| Dynamic Lot Sizing (FIXED per fix.md)                           |
 //+------------------------------------------------------------------+
 input group "═══════ Dynamic Lot Sizing ═══════"
-input double InpLotBase         = 0.01;    // Base lot size (start small)
+input double InpLotBase         = 0.02;    // Base lot size (MINIMUM lot, always used)
 input double InpLotMax          = 5.0;     // Max lot size cap
-input double InpEquityPerLotInc = 1000.0;  // Equity per lot inc ($)
-input double InpLotIncrement    = 0.1;     // Lot increment
+input double InpEquityPerLotInc = 1000.0;  // Equity per lot increment ($)
+input double InpLotIncrement    = 0.01;    // Lot increment per step (per fix.md)
+sinput string InpNote_LotSizing  = "Example: Base=0.02, Inc=$1000, Step=0.01";
+sinput string InpNote_LotFormula = "Balance $1500 → 0.02 + floor(1500/1000)×0.01 = 0.03";
 
 //+------------------------------------------------------------------+
 //| SWING DETECTION (UPDATED - from update.md)                       |
@@ -95,7 +99,7 @@ input int    InpLookbackSwing   = 100;   // Lookback Window (bars) - M30: 100 ba
 //+------------------------------------------------------------------+
 input group "═══════ BREAK OF STRUCTURE ═══════"
 input double InpMinBodyATR      = 0.8;   // Min Candle Body (× ATR) - XAUUSD: 0.8 filters noise
-input int    InpMinBreakPts     = 150;   // Min Break Distance (points = 15 pips) - Meaningful BOS
+input int    InpMinBreakPts     = 150;   // Min Break Distance (points) | ~15 pips XAUUSD
 input int    InpBOS_TTL         = 60;    // BOS Time-To-Live (bars)
 
 //+------------------------------------------------------------------+
@@ -103,7 +107,7 @@ input int    InpBOS_TTL         = 60;    // BOS Time-To-Live (bars)
 //+------------------------------------------------------------------+
 input group "═══════ BOS Retest (v2.1) ═══════"
 input bool   InpBOSTrackRetest    = true;    // Track BOS retest
-input int    InpBOSRetestTolerance= 150;     // Retest zone (points = 15 pips) - Retest buffer
+input int    InpBOSRetestTolerance= 150;     // Retest zone (points) | ~15 pips XAUUSD
 input int    InpBOSRetestMinGap   = 3;       // Min bars between retest
 
 //+------------------------------------------------------------------+
@@ -119,28 +123,28 @@ input int    InpSweep_TTL       = 50;    // Sweep TTL (bars)
 //+------------------------------------------------------------------+
 input group "═══════ ORDER BLOCK CONFIG ═══════"
 input bool   InpOB_UseDynamicSize = true;     // Use ATR-Based Sizing?
-input int    InpOB_MinSizePts     = 200;      // Fixed Min Size (points = 20 pips) if dynamic=false
-input double InpOB_ATRMultiplier  = 0.35;     // ATR Multiplier (if dynamic=true) - ~7 pips when ATR=20
+input int    InpOB_MinSizePts     = 200;      // Fixed Min Size (points) | ~20 pips XAUUSD
+input double InpOB_ATRMultiplier  = 0.35;     // ATR Multiplier (if dynamic=true) | ~7 pips @ ATR=20
 input int    InpOB_MaxTouches     = 3;        // Max touches
 input double InpOB_VolMultiplier  = 1.5;      // Min Volume (× average) - OB strength threshold
-input int    InpOB_BufferInvPts   = 50;       // Invalidation Buffer (points = 5 pips)
+input int    InpOB_BufferInvPts   = 50;       // Invalidation Buffer (points) | ~5 pips XAUUSD
 input int    InpOB_TTL            = 100;      // OB Time-To-Live (bars)
 
 //+------------------------------------------------------------------+
 //| OB Sweep Validation (v2.1 - UPDATED from update.md)              |
 //+------------------------------------------------------------------+
 input group "═══════ OB Sweep Validation (v2.1) ═══════"
-input int    InpOBSweepMaxDist    = 500;     // Max sweep distance (pts = 50 pips) - Nearby sweep
+input int    InpOBSweepMaxDist    = 500;     // Max sweep distance (points) | ~50 pips XAUUSD
 
 //+------------------------------------------------------------------+
 //| Fair Value Gap (UPDATED - from update.md)                        |
 //+------------------------------------------------------------------+
 input group "═══════ FAIR VALUE GAP ═══════"
-input int    InpFVG_MinPts      = 100;   // Min FVG Size (points = 10 pips) - Tradeable imbalance
+input int    InpFVG_MinPts      = 100;   // Min FVG Size (points) | ~10 pips XAUUSD
 input double InpFVG_FillMinPct  = 25.0;  // Min fill (%)
 input double InpFVG_MitigatePct = 50.0;  // Mitigation Threshold (%) - 50% fill = partial mitigation
 input double InpFVG_CompletePct = 85.0;  // Completion (%)
-input int    InpFVG_BufferInvPt = 200;   // Invalidation buffer (pts) - M30: 20 pips
+input int    InpFVG_BufferInvPt = 200;   // Invalidation buffer (points) | ~20 pips XAUUSD
 input int    InpFVG_TTL         = 80;    // FVG Time-To-Live (bars)
 input int    InpFVG_KeepSide    = 6;     // Max FVGs per side
 
@@ -148,8 +152,8 @@ input int    InpFVG_KeepSide    = 6;     // Max FVGs per side
 //| FVG MTF Overlap (v2.1 - UPDATED from update.md)                  |
 //+------------------------------------------------------------------+
 input group "═══════ FVG MTF Overlap (v2.1) ═══════"
-input double InpFVGTolerance      = 200;     // Tolerance (points = 20 pips) - MTF overlap buffer
-input int    InpFVGHTFMinSize     = 800;     // HTF FVG min size (pts = 80 pips) - Significant HTF FVG
+input double InpFVGTolerance      = 200;     // Tolerance (points) | ~20 pips XAUUSD
+input int    InpFVGHTFMinSize     = 800;     // HTF FVG min size (points) | ~80 pips XAUUSD
 
 //+------------------------------------------------------------------+
 //| Momentum                                                         |
@@ -164,8 +168,8 @@ input int    InpMomo_TTL        = 20;    // TTL (bars)
 //+------------------------------------------------------------------+
 input group "═══════ Execution ═══════"
 input int    InpTriggerBodyATR  = 30;    // Trigger body (0.30 ATR)
-input int    InpEntryBufferPts  = 200;   // Entry buffer (points = 20 pips) - Entry spacing
-input int    InpMinStopPts      = 1000;  // Min stop (points = 100 pips) - Realistic SL for XAUUSD
+input int    InpEntryBufferPts  = 200;   // Entry buffer (points) | ~20 pips XAUUSD
+input int    InpMinStopPts      = 1000;  // Min SL distance (points) | ~100 pips XAUUSD
 input int    InpOrder_TTL_Bars  = 16;    // Pending order TTL (bars)
 
 //+------------------------------------------------------------------+

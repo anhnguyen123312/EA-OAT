@@ -7,6 +7,40 @@
 #property strict
 
 //+------------------------------------------------------------------+
+//| Helper Functions: Points/Pips Conversion (per fix.md)            |
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Convert points to pips (XAUUSD: 1 pip = 10 points)               |
+//+------------------------------------------------------------------+
+double PointsToPips(double points) {
+    // For XAUUSD: 1 pip = 10 points
+    return points / 10.0;
+}
+
+//+------------------------------------------------------------------+
+//| Convert pips to points (XAUUSD: 1 pip = 10 points)               |
+//+------------------------------------------------------------------+
+double PipsToPoints(double pips) {
+    // For XAUUSD: 1 pip = 10 points
+    return pips * 10.0;
+}
+
+//+------------------------------------------------------------------+
+//| Get price distance in points                                     |
+//+------------------------------------------------------------------+
+double GetDistanceInPoints(double price1, double price2) {
+    return MathAbs(price1 - price2) / _Point;
+}
+
+//+------------------------------------------------------------------+
+//| Get price distance in pips                                       |
+//+------------------------------------------------------------------+
+double GetDistanceInPips(double price1, double price2) {
+    return PointsToPips(GetDistanceInPoints(price1, price2));
+}
+
+//+------------------------------------------------------------------+
 //| Position Tracking Structure                                      |
 //+------------------------------------------------------------------+
 struct PositionDCA {
@@ -238,21 +272,23 @@ double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
     double lotsRaw = riskValue / denominator;
     double lots = NormalizeDouble(lotsRaw, 2);
     
-    // DEBUG LOGS
+    // DEBUG LOGS (UPDATED per fix.md - clarify points vs pips)
+    // [CLARIFICATION] slPoints param is in POINTS (not pips)
+    // For XAUUSD: 100 points = 10 pips (1 pip = 10 points)
+    double slDistance_pips = PointsToPips(slPoints);
+    
     Print("═══════════════════════════════════════");
     Print("💰 LOT CALCULATION:");
     Print("   Balance: $", DoubleToString(balance, 2));
+    Print("   Equity:  $", DoubleToString(equity, 2));
     Print("   Risk %: ", riskPct, "% = $", DoubleToString(riskValue, 2));
-    Print("   SL Points: ", (int)slPoints, " (", (int)(slPoints/10), " pips)");
+    Print("   SL Distance: ", (int)slPoints, " points (", 
+          DoubleToString(slDistance_pips, 1), " pips)");
     Print("   Tick Value: $", DoubleToString(tickValue, 2));
-    Print("   Tick Size: ", DoubleToString(tickSize, 5));
-    Print("   _Point: ", DoubleToString(_Point, 5));
     Print("   Value/Point: $", DoubleToString(valuePerPoint, 4));
-    Print("   Risk Value: $", DoubleToString(riskValue, 2));
-    Print("   Denominator: ", DoubleToString(denominator, 2));
     Print("   Lots Raw: ", DoubleToString(lotsRaw, 4));
     Print("   Lots Final: ", DoubleToString(lots, 2));
-    Print("   SL Value: $", DoubleToString(slPoints * valuePerPoint * lots, 2));
+    Print("   Risk Value: $", DoubleToString(slPoints * valuePerPoint * lots, 2));
     Print("═══════════════════════════════════════");
     
     // Apply limits
@@ -268,12 +304,48 @@ double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
 }
 
 //+------------------------------------------------------------------+
-//| Get max lot per side (dynamic)                                   |
+//| Get max lot per side (dynamic) - FIXED per fix.md                |
 //+------------------------------------------------------------------+
 double CRiskManager::GetMaxLotPerSide() {
+    // [FIX] Use Balance OR Equity (flexible, tùy config)
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double equity = GetCurrentEquity();
-    double maxLot = m_lotBase + MathFloor(equity / m_equityPerLotInc) * m_lotIncrement;
+    double baseValue = m_useEquityMDD ? equity : balance;
+    
+    // [FIX] Dynamic lot calculation
+    // Formula: MaxLot = LotBase + floor(BaseValue / EquityPerInc) × LotIncrement
+    //
+    // Example với config (per fix.md):
+    //   LotBase = 0.02 (minimum lot, luôn được dùng)
+    //   EquityPerInc = $1000
+    //   LotIncrement = 0.01 (NOT 0.1!)
+    //
+    // Balance $500:  MaxLot = 0.02 + floor(500/1000) × 0.01 = 0.02 ✓
+    // Balance $1500: MaxLot = 0.02 + floor(1500/1000) × 0.01 = 0.03 ✓
+    // Balance $2500: MaxLot = 0.02 + floor(2500/1000) × 0.01 = 0.04 ✓
+    
+    double dynamicIncrement = MathFloor(baseValue / m_equityPerLotInc) * m_lotIncrement;
+    double maxLot = m_lotBase + dynamicIncrement;
+    
+    // Apply cap
     maxLot = MathMin(maxLot, m_lotMax);
+    
+    // [FIX] Ensure never goes below base (safety)
+    maxLot = MathMax(maxLot, m_lotBase);
+    
+    // Debug log (per fix.md)
+    Print("═══════════════════════════════════════");
+    Print("📊 DYNAMIC LOT SIZING:");
+    Print("   Balance: $", DoubleToString(balance, 2));
+    Print("   Equity:  $", DoubleToString(equity, 2));
+    Print("   Using:   ", m_useEquityMDD ? "Equity" : "Balance");
+    Print("   Base Value: $", DoubleToString(baseValue, 2));
+    Print("   Lot Base: ", DoubleToString(m_lotBase, 2));
+    Print("   Steps: ", (int)(baseValue / m_equityPerLotInc));
+    Print("   Dynamic Add: +", DoubleToString(dynamicIncrement, 2));
+    Print("   Max Lot: ", DoubleToString(maxLot, 2));
+    Print("═══════════════════════════════════════");
+    
     return maxLot;
 }
 
