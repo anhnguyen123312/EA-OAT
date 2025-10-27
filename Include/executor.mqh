@@ -446,6 +446,22 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             structureSL = c.fvgBottom - buffer;
         }
         
+        // ⭐ CRITICAL FIX (per fix-sl.md): Enforce minimum structure distance
+        double minStructureDist = (m_minStopPts / 2.0) * _Point;  // 50 pips (half of MinStop)
+        if(structureSL > 0 && MathAbs(entry - structureSL) < minStructureDist) {
+            Print("⚠️ Structure SL too close to entry!");
+            Print("   Entry:    ", entry);
+            Print("   Struct SL:", structureSL);
+            Print("   Distance: ", (int)(MathAbs(entry - structureSL) / _Point), " pts (", 
+                  DoubleToString((entry - structureSL) / _Point / 10, 1), " pips)");
+            Print("   Minimum:  ", (int)(minStructureDist / _Point), " pts (", 
+                  (int)(minStructureDist / _Point / 10), " pips)");
+            Print("   → Structure SL DISABLED, will use ATR-based instead");
+            
+            // Force use ATR-based SL instead
+            structureSL = 0;  // Disable structure SL
+        }
+        
         // Step 2: ATR-based SL (2.0× ATR per research)
         double atrSL = entry - (2.0 * atr);
         
@@ -463,24 +479,64 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             methodSL = entry - minStopDistance;
+            Print("⚠️ SL adjusted to MinStop: ", m_minStopPts, " points (", 
+                  m_minStopPts/10, " pips)");
         }
         
-        // Step 7: Apply FIXED SL if enabled (override all)
+        // ═══════════════════════════════════════════════════════════
+        // DETAILED SL DEBUG LOG (per fix-sl.md)
+        // ═══════════════════════════════════════════════════════════
+        Print("═══════════════════════════════════");
+        Print("SL CALCULATION DEBUG (BUY):");
+        Print("═══════════════════════════════════");
+        Print("Entry:       ", entry);
+        if(c.hasSweep) Print("Sweep Level: ", c.sweepLevel);
+        if(c.hasOB) Print("OB Bottom:   ", c.poiBottom);
+        if(c.hasFVG) Print("FVG Bottom:  ", c.fvgBottom);
+        Print("Buffer:      ", (int)(buffer / _Point), " pts");
+        Print("──────────────────────────────────");
+        Print("Structure SL:", structureSL, " (", structureSL > 0 ? (int)((entry-structureSL)/_Point) : 0, " pts)");
+        Print("ATR SL:      ", atrSL, " (", (int)((entry-atrSL)/_Point), " pts)");
+        Print("Preliminary: ", preliminarySL);
+        Print("After Cap:   ", methodSL);
+        Print("──────────────────────────────────");
+        Print("MinStop Check:");
+        Print("  slDistance: ", (int)((entry - methodSL) / _Point), " pts");
+        Print("  minStopDistance: ", m_minStopPts, " pts");
+        Print("  Pass? ", (entry - methodSL) >= minStopDistance ? "YES" : "NO");
+        if((entry - methodSL) < minStopDistance) {
+            Print("  → ADJUSTED to MinStop");
+        }
+        Print("──────────────────────────────────");
+        
+        // Step 7: Apply FIXED SL if enabled (WITH VALIDATION - FIX bug-fix-sl.md)
         if(m_useFixedSL) {
             double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
-            sl = entry - fixedSL_Distance;
+            
+            // ✅ CRITICAL FIX: Validate Fixed SL >= MinStop
+            if(fixedSL_Distance < minStopDistance) {
+                Print("❌ CRITICAL: Fixed SL too small!");
+                Print("   Fixed SL: ", (int)(fixedSL_Distance/_Point), " pts (", 
+                      m_fixedSL_Pips, " pips)");
+                Print("   MinStop:  ", m_minStopPts, " pts (", m_minStopPts/10, " pips)");
+                Print("   → Using MinStop instead");
+                sl = entry - minStopDistance;  // ✅ Use MinStop
+            } else {
+                sl = entry - fixedSL_Distance;  // ✅ Use Fixed SL
+            }
+            
             Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips = ", 
                   (int)((entry-sl)/_Point), " points");
         } else {
             sl = methodSL;
             Print("🎯 METHOD SL: ", (int)((entry-sl)/_Point), " points = ",
                   (int)((entry-sl)/_Point/10), " pips");
-            Print("   Structure: ", (structureSL > 0 ? (int)((entry-structureSL)/_Point) : 0), " pts");
-            Print("   ATR SL: ", (int)((entry-atrSL)/_Point), " pts (2.0×", 
-                  DoubleToString(atr/_Point, 1), ")");
-            Print("   Cap: ", (int)((entry-maxCapSL)/_Point), " pts (3.5×ATR)");
-            Print("   MinStop: ", m_minStopPts, " pts enforced");
         }
+        
+        Print("──────────────────────────────────");
+        Print("Final SL: ", sl);
+        Print("SL Distance: ", (int)((entry-sl)/_Point), " pts = ", (int)((entry-sl)/_Point/10), " pips");
+        Print("═══════════════════════════════════");
         
         // Calculate DYNAMIC TP from structure
         double structureTP = FindTPTarget(c, entry);
@@ -524,6 +580,22 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             structureSL = c.fvgTop + buffer;
         }
         
+        // ⭐ CRITICAL FIX (per fix-sl.md): Enforce minimum structure distance
+        double minStructureDist = (m_minStopPts / 2.0) * _Point;  // 50 pips (half of MinStop)
+        if(structureSL > 0 && MathAbs(structureSL - entry) < minStructureDist) {
+            Print("⚠️ Structure SL too close to entry!");
+            Print("   Entry:    ", entry);
+            Print("   Struct SL:", structureSL);
+            Print("   Distance: ", (int)(MathAbs(structureSL - entry) / _Point), " pts (", 
+                  DoubleToString((structureSL - entry) / _Point / 10, 1), " pips)");
+            Print("   Minimum:  ", (int)(minStructureDist / _Point), " pts (", 
+                  (int)(minStructureDist / _Point / 10), " pips)");
+            Print("   → Structure SL DISABLED, will use ATR-based instead");
+            
+            // Force use ATR-based SL instead
+            structureSL = 0;  // Disable structure SL
+        }
+        
         // Step 2: ATR-based SL (2.0× ATR per research)
         double atrSL = entry + (2.0 * atr);
         
@@ -541,15 +613,64 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             methodSL = entry + minStopDistance;
+            Print("⚠️ SL adjusted to MinStop: ", m_minStopPts, " points (", 
+                  m_minStopPts/10, " pips)");
         }
         
-        // Step 7: Apply FIXED SL if enabled (override all)
+        // ═══════════════════════════════════════════════════════════
+        // DETAILED SL DEBUG LOG (per fix-sl.md)
+        // ═══════════════════════════════════════════════════════════
+        Print("═══════════════════════════════════");
+        Print("SL CALCULATION DEBUG (SELL):");
+        Print("═══════════════════════════════════");
+        Print("Entry:       ", entry);
+        if(c.hasSweep) Print("Sweep Level: ", c.sweepLevel);
+        if(c.hasOB) Print("OB Top:      ", c.poiTop);
+        if(c.hasFVG) Print("FVG Top:     ", c.fvgTop);
+        Print("Buffer:      ", (int)(buffer / _Point), " pts");
+        Print("──────────────────────────────────");
+        Print("Structure SL:", structureSL, " (", structureSL > 0 ? (int)((structureSL-entry)/_Point) : 0, " pts)");
+        Print("ATR SL:      ", atrSL, " (", (int)((atrSL-entry)/_Point), " pts)");
+        Print("Preliminary: ", preliminarySL);
+        Print("After Cap:   ", methodSL);
+        Print("──────────────────────────────────");
+        Print("MinStop Check:");
+        Print("  slDistance: ", (int)((methodSL - entry) / _Point), " pts");
+        Print("  minStopDistance: ", m_minStopPts, " pts");
+        Print("  Pass? ", (methodSL - entry) >= minStopDistance ? "YES" : "NO");
+        if((methodSL - entry) < minStopDistance) {
+            Print("  → ADJUSTED to MinStop: ", entry + minStopDistance);
+        }
+        Print("──────────────────────────────────");
+        
+        // Step 7: Apply FIXED SL if enabled (WITH VALIDATION - FIX bug-fix-sl.md)
         if(m_useFixedSL) {
             double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
-            sl = entry + fixedSL_Distance;
+            
+            // ✅ CRITICAL FIX: Validate Fixed SL >= MinStop
+            if(fixedSL_Distance < minStopDistance) {
+                Print("❌ CRITICAL: Fixed SL too small!");
+                Print("   Fixed SL: ", (int)(fixedSL_Distance/_Point), " pts (", 
+                      m_fixedSL_Pips, " pips)");
+                Print("   MinStop:  ", m_minStopPts, " pts (", m_minStopPts/10, " pips)");
+                Print("   → Using MinStop instead");
+                sl = entry + minStopDistance;  // ✅ Use MinStop
+            } else {
+                sl = entry + fixedSL_Distance;  // ✅ Use Fixed SL
+            }
+            
+            Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips = ", 
+                  (int)((sl-entry)/_Point), " points");
         } else {
             sl = methodSL;
+            Print("🎯 METHOD SL: ", (int)((sl-entry)/_Point), " points = ",
+                  (int)((sl-entry)/_Point/10), " pips");
         }
+        
+        Print("──────────────────────────────────");
+        Print("Final SL: ", sl);
+        Print("SL Distance: ", (int)((sl-entry)/_Point), " pts = ", (int)((sl-entry)/_Point/10), " pips");
+        Print("═══════════════════════════════════");
         
         // Calculate DYNAMIC TP from structure
         double structureTP = FindTPTarget(c, entry);
@@ -577,6 +698,35 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
     sl = NormalizeDouble(sl, _Digits);
     tp = NormalizeDouble(tp, _Digits);
     
+    // ═══════════════════════════════════════════════════════════════
+    // CRITICAL FINAL SANITY CHECK (FIX bug-fix-sl.md)
+    // ═══════════════════════════════════════════════════════════════
+    double finalDistance = (c.direction == 1) ? (entry - sl) : (sl - entry);
+    double minStopDistance = m_minStopPts * _Point;
+    
+    if(finalDistance < minStopDistance) {
+        Print("❌ CRITICAL: SL still too small after all checks!");
+        Print("   Direction: ", c.direction == 1 ? "BUY" : "SELL");
+        Print("   Entry: ", entry);
+        Print("   SL:    ", sl);
+        Print("   Distance: ", (int)(finalDistance/_Point), " points (", 
+              DoubleToString(finalDistance/_Point/10, 1), " pips)");
+        Print("   MinStop:  ", m_minStopPts, " points (", m_minStopPts/10, " pips)");
+        Print("   ");
+        Print("   This trade is REJECTED to prevent instant stop loss.");
+        return false;  // ✅ Reject trade
+    }
+    
+    // Additional check: SL > Spread
+    double spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD) * _Point;
+    if(finalDistance <= spread) {
+        Print("❌ CRITICAL: SL <= Spread!");
+        Print("   SL Distance: ", (int)(finalDistance/_Point), " pts");
+        Print("   Spread:      ", (int)(spread/_Point), " pts");
+        Print("   This trade would hit SL immediately. REJECTED.");
+        return false;
+    }
+    
     // Calculate RR
     if(c.direction == 1) {
         double denominator = entry - sl;
@@ -593,6 +743,12 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
         Print("❌ RR too low: ", DoubleToString(rr, 2), " (min: ", m_minRR, ")");
         return false;
     }
+    
+    Print("✅ VALIDATION PASSED:");
+    Print("   SL Distance: ", (int)(finalDistance/_Point), " pts (", 
+          DoubleToString(finalDistance/_Point/10, 1), " pips)");
+    Print("   Spread:      ", (int)(spread/_Point), " pts");
+    Print("   RR Ratio:    ", DoubleToString(rr, 2), ":1");
     
     return true;
 }
@@ -638,6 +794,39 @@ bool CExecutor::PlaceStopOrder(int direction, double entry, double sl, double tp
     } else {
         return false;
     }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // FIX 3: Pre-Order Validation (FIX bug-fix-sl.md)
+    // ═══════════════════════════════════════════════════════════════
+    double slDistance = (direction == 1) ? (entry - sl) : (sl - entry);
+    double minRequired = m_minStopPts * _Point;
+    
+    if(slDistance < minRequired) {
+        Print("❌ STOP ORDER REJECTED: SL too small");
+        Print("   Direction:   ", direction == 1 ? "BUY" : "SELL");
+        Print("   Entry:       ", entry);
+        Print("   SL:          ", sl);
+        Print("   SL Distance: ", (int)(slDistance/_Point), " points (", 
+              DoubleToString(slDistance/_Point/10, 1), " pips)");
+        Print("   Min Required:", m_minStopPts, " points (", m_minStopPts/10, " pips)");
+        Print("   ");
+        Print("   This order would result in instant stop loss. REJECTED.");
+        return false;  // ✅ Prevent order placement
+    }
+    
+    // Additional check: SL > Spread
+    double spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD) * _Point;
+    if(slDistance <= spread) {
+        Print("❌ STOP ORDER REJECTED: SL <= Spread");
+        Print("   SL Distance: ", (int)(slDistance/_Point), " pts");
+        Print("   Spread:      ", (int)(spread/_Point), " pts");
+        Print("   This order would hit SL immediately. REJECTED.");
+        return false;
+    }
+    
+    Print("✅ Pre-order validation passed:");
+    Print("   SL Distance: ", (int)(slDistance/_Point), " pts (OK)");
+    Print("   Spread:      ", (int)(spread/_Point), " pts");
     
     bool sent = OrderSend(request, result);
     
@@ -718,6 +907,39 @@ bool CExecutor::PlaceLimitOrder(int direction, const Candidate &c, double sl, do
     } else {
         return false;
     }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // FIX 3: Pre-Order Validation (FIX bug-fix-sl.md)
+    // ═══════════════════════════════════════════════════════════════
+    double slDistance = (direction == 1) ? (entryPrice - sl) : (sl - entryPrice);
+    double minRequired = m_minStopPts * _Point;
+    
+    if(slDistance < minRequired) {
+        Print("❌ LIMIT ORDER REJECTED: SL too small");
+        Print("   Direction:   ", direction == 1 ? "BUY" : "SELL");
+        Print("   Entry:       ", entryPrice);
+        Print("   SL:          ", sl);
+        Print("   SL Distance: ", (int)(slDistance/_Point), " points (", 
+              DoubleToString(slDistance/_Point/10, 1), " pips)");
+        Print("   Min Required:", m_minStopPts, " points (", m_minStopPts/10, " pips)");
+        Print("   ");
+        Print("   This order would result in instant stop loss. REJECTED.");
+        return false;  // ✅ Prevent order placement
+    }
+    
+    // Additional check: SL > Spread
+    double spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD) * _Point;
+    if(slDistance <= spread) {
+        Print("❌ LIMIT ORDER REJECTED: SL <= Spread");
+        Print("   SL Distance: ", (int)(slDistance/_Point), " pts");
+        Print("   Spread:      ", (int)(spread/_Point), " pts");
+        Print("   This order would hit SL immediately. REJECTED.");
+        return false;
+    }
+    
+    Print("✅ Pre-order validation passed:");
+    Print("   SL Distance: ", (int)(slDistance/_Point), " pts (OK)");
+    Print("   Spread:      ", (int)(spread/_Point), " pts");
     
     bool sent = OrderSend(request, result);
     

@@ -257,6 +257,54 @@ int OnInit() {
     Print("═══════════════════════════════════════════════════════");
     
     // ═══════════════════════════════════════════════════════════════
+    // CRITICAL: Validate Fixed SL Configuration (FIX for bug-fix-sl.md)
+    // ═══════════════════════════════════════════════════════════════
+    if(InpUseFixedSL && InpFixedSL_Pips < 60) {
+        Print("❌ ERROR: FixedSL_Pips too small: ", InpFixedSL_Pips);
+        Print("   Current setting: ", InpFixedSL_Pips, " pips");
+        Print("   Minimum required for XAUUSD: 60 pips");
+        Print("   Recommended: 100-150 pips");
+        Print("   ");
+        Print("   WHY THIS IS CRITICAL:");
+        Print("   - XAUUSD spread: ~35 pips (350 points)");
+        Print("   - MinStopPts: ", InpMinStopPts, " points (", InpMinStopPts/10, " pips)");
+        Print("   - Your FixedSL: ", InpFixedSL_Pips*10, " points (", InpFixedSL_Pips, " pips)");
+        Print("   ");
+        Print("   FIX OPTIONS:");
+        Print("   1. Set InpFixedSL_Pips = 100 (or higher)");
+        Print("   2. OR set InpUseFixedSL = false (use dynamic SL)");
+        Print("   ");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+    
+    // Additional validation: MinStopPts reasonable for XAUUSD
+    if(InpMinStopPts < 300) {
+        Print("⚠️ WARNING: MinStopPts very small for XAUUSD: ", InpMinStopPts, " points (", InpMinStopPts/10, " pips)");
+        Print("   Recommended: >= 1000 points (100 pips)");
+        Print("   Current spread: ~350 points (35 pips)");
+    }
+    
+    Print("✅ Configuration validated:");
+    
+    // ═══════════════════════════════════════════════════════════════
+    // VERSION CHECK (per fix-sl.md)
+    // ═══════════════════════════════════════════════════════════════
+    Print("═══════════════════════════════════");
+    Print("EA VERSION CHECK");
+    Print("═══════════════════════════════════");
+    Print("InpMinStopPts: ", InpMinStopPts, " pts = ", InpMinStopPts/10, " pips");
+    Print("InpEntryBufferPts: ", InpEntryBufferPts, " pts = ", InpEntryBufferPts/10, " pips");
+    Print("──────────────────────────────────");
+    if(InpMinStopPts < 1000) {
+        Print("⚠️ WARNING: MinStopPts < 100 pips!");
+        Print("⚠️ Recommended: 1000 pts (100 pips) for XAUUSD");
+        Print("⚠️ Current setting may result in too-small SL");
+    } else {
+        Print("✅ MinStopPts OK: ", InpMinStopPts/10, " pips (good for XAUUSD)");
+    }
+    Print("═══════════════════════════════════");
+    
+    // ═══════════════════════════════════════════════════════════════
     // Initialize Detector
     // ═══════════════════════════════════════════════════════════════
     Print("STEP 1: Creating detector...");
