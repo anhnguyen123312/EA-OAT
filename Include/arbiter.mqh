@@ -272,7 +272,7 @@ Candidate CArbiter::BuildCandidate(const BOSSignal &bos, const SweepSignal &swee
 }
 
 //+------------------------------------------------------------------+
-//| Score Candidate (per docs Section 2)                             |
+//| Score Candidate (v2.1 Enhanced)                                  |
 //+------------------------------------------------------------------+
 double CArbiter::ScoreCandidate(Candidate &c) {
     if(!c.valid) return 0.0;
@@ -287,19 +287,17 @@ double CArbiter::ScoreCandidate(Candidate &c) {
     }
     
     // ═══════════════════════════════════════════════════════════════
-    // COMPONENT BONUSES (v1.2 - per docs Section 2)
+    // COMPONENT BONUSES (v2.1 Enhanced)
     // ═══════════════════════════════════════════════════════════════
-    if(c.hasBOS) score += 30.0;
+    if(c.hasBOS) score += 40.0;
+    if(c.hasOB) score += 35.0;
+    if(c.hasFVG && c.fvgState == 0) score += 30.0; // Fresh FVG
     if(c.hasSweep) score += 25.0;
-    if(c.hasOB) score += 20.0;
-    if(c.hasFVG && c.fvgState == 0) score += 15.0; // Valid FVG
-    if(c.hasMomo && !c.momoAgainstSmc) score += 10.0;
     
     // ═══════════════════════════════════════════════════════════════
-    // v2.1 ADVANCED BONUSES - DISABLED (not in docs Section 2)
+    // v2.1 ADVANCED BONUSES (ENABLED)
     // ═══════════════════════════════════════════════════════════════
     
-    /*
     // OB SWEEP VALIDATION
     if(c.hasOB && c.obHasSweep) {
         if(c.obSweepQuality >= 0.8) {
@@ -372,65 +370,83 @@ double CArbiter::ScoreCandidate(Candidate &c) {
             }
         }
     }
-    */
     
     // ═══════════════════════════════════════════════════════════════
-    // OTHER BONUSES (per docs Section 2)
+    // OTHER BONUSES (v2.1)
     // ═══════════════════════════════════════════════════════════════
+    
+    // Momentum aligned
+    if(c.hasMomo && !c.momoAgainstSmc) {
+        score += 10.0;
+    }
     
     // Sweep nearby bonus
     if(c.hasSweep && c.sweepDistanceBars <= 10) {
         score += 15.0;
+        Print("✨ Sweep nearby ≤10 bars (+15)");
     }
     
     // MTF alignment
     if(c.mtfBias != 0) {
         if(c.mtfBias == c.direction) {
-            score += 20.0;  // With trend
+            score += 25.0;
+            Print("✨ MTF aligned (+25)");
         } else {
-            score -= 30.0;  // Counter-trend
+            score -= 40.0;
+            Print("⚠️ MTF counter-trend (-40)");
         }
     }
     
     // Strong OB bonus
     if(c.hasOB && c.obStrong) {
         score += 10.0;
+        Print("✨ Strong OB (+10)");
     }
     
-    // RR bonus (optional - not implemented yet)
+    // Fresh POI
+    if((c.hasOB && c.obTouches == 0) || (c.hasFVG && c.fvgState == 0)) {
+        score += 10.0;
+        Print("✨ Fresh POI (+10)");
+    }
     
     // ═══════════════════════════════════════════════════════════════
-    // PENALTIES (per docs Section 2)
+    // PENALTIES (v2.1)
     // ═══════════════════════════════════════════════════════════════
     
     // Momentum AGAINST SMC - DISQUALIFY
     if(c.hasMomo && c.momoAgainstSmc) {
+        Print("❌ Momentum against SMC - DISQUALIFIED");
         return 0.0;
     }
     
     // OB too many touches
     if(c.hasOB && c.obTouches >= m_obMaxTouches) {
-        score *= 0.5;  // 50% reduction
+        score *= 0.5;
+        Print("⚠️ OB max touches - score halved");
     }
     
     // FVG Completed but OB valid
     if(c.hasFVG && c.fvgState == 2 && c.hasOB) {
-        score -= 20.0;  // Prefer OB
+        score -= 20.0;
+        Print("⚠️ FVG completed (-20)");
     }
     
     // Weak OB
-    if(c.hasOB && c.obWeak) {
+    if(c.hasOB && c.obWeak && !c.obStrong) {
         score -= 10.0;
+        Print("⚠️ Weak OB (-10)");
     }
     
     // Breaker block
     if(c.hasOB && c.obIsBreaker) {
         score -= 10.0;
+        Print("⚠️ Breaker block (-10)");
     }
     
     // Mitigated FVG
     if(c.hasFVG && c.fvgState == 1) {
         score -= 10.0;
+        Print("⚠️ FVG mitigated (-10)");
     }
     
     return score;

@@ -465,19 +465,32 @@ bool CalculateEntry(Candidate c, double triggerHigh, double triggerLow,
         entry = triggerHigh + buffer;
         
         // ═══════════════════════════════════════════════
-        // STEP 2: Calculate METHOD-based SL
+        // STEP 2: Calculate SL (ICT Research Algorithm)
         // ═══════════════════════════════════════════════
-        double methodSL = 0;
         
+        // Step 2.1: Structure-based SL
+        double structureSL = 0;
         if(c.hasSweep) {
-            methodSL = c.sweepLevel - buffer;
-        } else if(c.hasOB || c.hasFVG) {
-            methodSL = c.poiBottom - buffer;
-        } else {
-            return false;
+            structureSL = c.sweepLevel - buffer;
+        } else if(c.hasOB) {
+            structureSL = c.poiBottom - buffer;
+        } else if(c.hasFVG) {
+            structureSL = c.fvgBottom - buffer;
         }
         
-        // Ensure minimum stop distance
+        // Step 2.2: ATR-based SL (2.0× ATR)
+        double atrSL = entry - (2.0 × ATR);
+        
+        // Step 2.3: Preliminary = MIN(structure, ATR)
+        double preliminarySL = MIN(structureSL, atrSL);
+        
+        // Step 2.4: ATR Cap (3.5× ATR maximum)
+        double maxCapSL = entry - (3.5 × ATR);
+        
+        // Step 2.5: Apply cap
+        double methodSL = MAX(preliminarySL, maxCapSL);
+        
+        // Step 2.6: Ensure minimum stop distance
         double slDistance = entry - methodSL;
         double minStopDistance = MinStopPts * _Point;
         if(slDistance < minStopDistance) {
@@ -485,10 +498,11 @@ bool CalculateEntry(Candidate c, double triggerHigh, double triggerLow,
         }
         
         // ═══════════════════════════════════════════════
-        // STEP 3: Calculate METHOD-based TP
+        // STEP 3: Calculate TP (Structure Tier Scoring)
         // ═══════════════════════════════════════════════
-        double methodRisk = entry - methodSL;
-        double methodTP = entry + (methodRisk * MinRR);
+        double structureTP = FindTPTarget(c, entry);
+        // Tier scoring: Swing(9pts), OB(7pts), FVG(6pts), Psych(8pts)
+        // Fallback: entry + 4× ATR
         
         // ═══════════════════════════════════════════════
         // STEP 4: Apply FIXED SL if enabled
@@ -504,16 +518,23 @@ bool CalculateEntry(Candidate c, double triggerHigh, double triggerLow,
         }
         
         // ═══════════════════════════════════════════════
-        // STEP 5: TP (always use METHOD, not affected by Fixed SL)
+        // STEP 5: TP (Structure-based or Fixed)
         // ═══════════════════════════════════════════════
         if(FixedTP_Enable) {
             double fixedTP_Distance = FixedTP_Pips * 10 * _Point;
             tp = entry + fixedTP_Distance;
-            Print("📌 FIXED TP: ", FixedTP_Pips, " pips (absolute)");
+            Print("📌 FIXED TP: ", FixedTP_Pips, " pips");
         } else {
-            tp = methodTP;
-            Print("🎯 METHOD TP: ", (int)((tp-entry)/_Point/10),
-                  " pips (from method RR)");
+            // Use structure TP (from scoring)
+            if(structureTP > entry) {
+                tp = structureTP;
+                Print("🎯 STRUCTURE TP: Score-based target");
+            } else {
+                // Fallback: MinRR × actual risk
+                double actualRisk = entry - sl;
+                tp = entry + (actualRisk × MinRR);
+                Print("⚠️ FALLBACK TP: ", MinRR, "× risk");
+            }
         }
         
     } else if(c.direction == -1) {  // SELL SETUP

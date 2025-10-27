@@ -78,7 +78,7 @@ input int    InpDailyResetHour  = 6;     // Daily reset hour (GMT+7)
 //| Dynamic Lot Sizing                                               |
 //+------------------------------------------------------------------+
 input group "═══════ Dynamic Lot Sizing ═══════"
-input double InpLotBase         = 0.1;     // Base lot size
+input double InpLotBase         = 0.01;    // Base lot size (start small)
 input double InpLotMax          = 5.0;     // Max lot size cap
 input double InpEquityPerLotInc = 1000.0;  // Equity per lot inc ($)
 input double InpLotIncrement    = 0.1;     // Lot increment
@@ -90,7 +90,7 @@ input group "═══════ BOS Detection ═══════"
 input int    InpFractalK        = 3;     // Fractal K
 input int    InpLookbackSwing   = 50;    // Lookback (bars)
 input double InpMinBodyATR      = 0.6;   // Min body (ATR multiple)
-input int    InpMinBreakPts     = 70;    // Min break (points)
+input int    InpMinBreakPts     = 400;   // Min break (points) - M30: 40 pips (research×2 from M5)
 input int    InpBOS_TTL         = 60;    // TTL (bars)
 
 //+------------------------------------------------------------------+
@@ -98,7 +98,7 @@ input int    InpBOS_TTL         = 60;    // TTL (bars)
 //+------------------------------------------------------------------+
 input group "═══════ BOS Retest (v2.1) ═══════"
 input bool   InpBOSTrackRetest    = true;    // Track BOS retest
-input int    InpBOSRetestTolerance= 30;      // Retest zone (points)
+input int    InpBOSRetestTolerance= 300;     // Retest zone (points) - M30: 30 pips (research buffer)
 input int    InpBOSRetestMinGap   = 3;       // Min bars between retest
 
 //+------------------------------------------------------------------+
@@ -114,7 +114,7 @@ input int    InpSweep_TTL       = 24;    // TTL (bars)
 //+------------------------------------------------------------------+
 input group "═══════ Order Block ═══════"
 input int    InpOB_MaxTouches   = 3;     // Max touches
-input int    InpOB_BufferInvPts = 70;    // Invalidation buffer (pts)
+input int    InpOB_BufferInvPts = 300;   // Invalidation buffer (pts) - M30: 30 pips (research)
 input int    InpOB_TTL          = 160;   // TTL (bars)
 input double InpOB_VolMultiplier= 1.3;   // Strong OB threshold
 
@@ -122,17 +122,17 @@ input double InpOB_VolMultiplier= 1.3;   // Strong OB threshold
 //| OB Sweep Validation (v2.1)                                       |
 //+------------------------------------------------------------------+
 input group "═══════ OB Sweep Validation (v2.1) ═══════"
-input int    InpOBSweepMaxDist    = 100;     // Max sweep distance (pts)
+input int    InpOBSweepMaxDist    = 600;     // Max sweep distance (pts) - M30: 60 pips (research×2)
 
 //+------------------------------------------------------------------+
 //| Fair Value Gap                                                   |
 //+------------------------------------------------------------------+
 input group "═══════ Fair Value Gap ═══════"
-input int    InpFVG_MinPts      = 180;   // Min size (points)
+input int    InpFVG_MinPts      = 200;   // Min size (points) - M30: 20 pips (research×2 from M5 100pts)
 input double InpFVG_FillMinPct  = 25.0;  // Min fill (%)
 input double InpFVG_MitigatePct = 35.0;  // Mitigation (%)
 input double InpFVG_CompletePct = 85.0;  // Completion (%)
-input int    InpFVG_BufferInvPt = 70;    // Invalidation buffer (pts)
+input int    InpFVG_BufferInvPt = 300;   // Invalidation buffer (pts) - M30: 30 pips (research)
 input int    InpFVG_TTL         = 70;    // TTL (bars)
 input int    InpFVG_KeepSide    = 6;     // Max FVGs per side
 
@@ -140,8 +140,8 @@ input int    InpFVG_KeepSide    = 6;     // Max FVGs per side
 //| FVG MTF Overlap (v2.1)                                           |
 //+------------------------------------------------------------------+
 input group "═══════ FVG MTF Overlap (v2.1) ═══════"
-input double InpFVGTolerance      = 50;      // Tolerance (points)
-input int    InpFVGHTFMinSize     = 200;     // HTF FVG min size (pts)
+input double InpFVGTolerance      = 300;     // Tolerance (points) - M30: 30 pips
+input int    InpFVGHTFMinSize     = 400;     // HTF FVG min size (pts) - M30: 40 pips (scaled from M5)
 
 //+------------------------------------------------------------------+
 //| Momentum                                                         |
@@ -156,8 +156,8 @@ input int    InpMomo_TTL        = 20;    // TTL (bars)
 //+------------------------------------------------------------------+
 input group "═══════ Execution ═══════"
 input int    InpTriggerBodyATR  = 30;    // Trigger body (0.30 ATR)
-input int    InpEntryBufferPts  = 70;    // Entry buffer (points)
-input int    InpMinStopPts      = 300;   // Min stop (points)
+input int    InpEntryBufferPts  = 300;   // Entry buffer (points) - M30: 30 pips (research line 102)
+input int    InpMinStopPts      = 500;   // Min stop (points) - M30: 50 pips (research×2)
 input int    InpOrder_TTL_Bars  = 16;    // Pending order TTL (bars)
 
 //+------------------------------------------------------------------+
@@ -619,14 +619,15 @@ void OnTick() {
                     }
                     
                     // ═══════════════════════════════════════════
-                    // STEP 12: One-trade-per-bar-per-direction protection
+                    // STEP 12: One-trade-per-bar protection (DISABLED for v2.1)
+                    // Allow multiple orders per bar
                     // ═══════════════════════════════════════════
-                    bool alreadyTradedThisBar = (g_lastOrderTime == currentBarTime);
+                    // bool alreadyTradedThisBar = (g_lastOrderTime == currentBarTime);
                     
                     // ═══════════════════════════════════════════
                     // STEP 13: Place order if all checks pass (SAME DIRECTION)
                     // ═══════════════════════════════════════════
-                    if(sameDirPositions == 0 && sameDirPendingOrders == 0 && !alreadyTradedThisBar) {
+                    if(sameDirPositions == 0 && sameDirPendingOrders == 0) {
                         
                         int patternType = g_arbiter.GetPatternType(g_lastCandidate);
                         string patternName = g_stats.GetPatternName(patternType);
@@ -677,9 +678,7 @@ void OnTick() {
                             if(sameDirPendingOrders > 0) {
                                 Print("⊘ ", dirStr, " entry skipped: Already have ", sameDirPendingOrders, " ", dirStr, " pending order(s)");
                             }
-                            if(alreadyTradedThisBar) {
-                                Print("⊘ Entry skipped: One-trade-per-bar (any direction)");
-                            }
+                            // One-trade-per-bar check removed in v2.1
                         }
                     }
                 }

@@ -767,7 +767,7 @@ bool CDetector::CheckFVGMTFOverlap(FVGSignal &ltfFVG) {
     }
     
     // Scan for HTF FVG in same direction
-    for(int i = 2; i < 60; i++) {
+    for(int i = 2; i < 58; i++) {  // FIXED: i+2 must be < 60, so i < 58
         if(ltfFVG.direction == 1) {
             // BULLISH: Check if low[i] > high[i+2]
             if(htfLow[i] > htfHigh[i+2]) {

@@ -108,6 +108,7 @@ public:
     
     // Helper
     double GetATR();
+    double FindTPTarget(const Candidate &c, double entry);
     
 private:
     int GetLocalHour();
@@ -431,69 +432,118 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
         // BUY SETUP
         entry = triggerHigh + buffer;
         
-        // Calculate METHOD-based SL
-        double methodSL = 0;
+        // ═══════════════════════════════════════════════════════════
+        // SL CALCULATION (ICT Research Algorithm)
+        // ═══════════════════════════════════════════════════════════
+        
+        // Step 1: Structure-based SL (OB low, Swing low, Sweep level)
+        double structureSL = 0;
         if(c.hasSweep) {
-            methodSL = c.sweepLevel - buffer;
-        } else if(c.hasOB || c.hasFVG) {
-            methodSL = c.poiBottom - buffer;
-        } else {
-            return false;
+            structureSL = c.sweepLevel - buffer;
+        } else if(c.hasOB) {
+            structureSL = c.poiBottom - buffer;
+        } else if(c.hasFVG) {
+            structureSL = c.fvgBottom - buffer;
         }
         
-        // Ensure minimum stop distance
+        // Step 2: ATR-based SL (2.0× ATR per research)
+        double atrSL = entry - (2.0 * atr);
+        
+        // Step 3: Preliminary SL = MIN(structure, ATR)
+        double preliminarySL = (structureSL > 0) ? MathMin(structureSL, atrSL) : atrSL;
+        
+        // Step 4: ATR Cap (3.5× ATR max per research)
+        double maxCapSL = entry - (3.5 * atr);
+        
+        // Step 5: Apply cap (SL không được xa hơn cap)
+        double methodSL = MathMax(preliminarySL, maxCapSL);
+        
+        // Step 6: Ensure minimum stop distance
         double slDistance = entry - methodSL;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             methodSL = entry - minStopDistance;
         }
         
-        // Calculate METHOD-based TP
-        double methodRisk = entry - methodSL;
-        double methodTP = entry + (methodRisk * m_minRR);
-        
-        // Apply FIXED SL if enabled
+        // Step 7: Apply FIXED SL if enabled (override all)
         if(m_useFixedSL) {
             double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
             sl = entry - fixedSL_Distance;
+            Print("📌 FIXED SL: ", m_fixedSL_Pips, " pips = ", 
+                  (int)((entry-sl)/_Point), " points");
         } else {
             sl = methodSL;
+            Print("🎯 METHOD SL: ", (int)((entry-sl)/_Point), " points = ",
+                  (int)((entry-sl)/_Point/10), " pips");
+            Print("   Structure: ", (structureSL > 0 ? (int)((entry-structureSL)/_Point) : 0), " pts");
+            Print("   ATR SL: ", (int)((entry-atrSL)/_Point), " pts (2.0×", 
+                  DoubleToString(atr/_Point, 1), ")");
+            Print("   Cap: ", (int)((entry-maxCapSL)/_Point), " pts (3.5×ATR)");
+            Print("   MinStop: ", m_minStopPts, " pts enforced");
         }
         
-        // Apply FIXED TP if enabled
+        // Calculate DYNAMIC TP from structure
+        double structureTP = FindTPTarget(c, entry);
+        
+        // Apply FIXED TP if enabled (override structure)
         if(m_fixedTP_Enable) {
             double fixedTP_Distance = m_fixedTP_Pips * 10 * _Point;
             tp = entry + fixedTP_Distance;
+            Print("📌 FIXED TP: ", m_fixedTP_Pips, " pips = ",
+                  (int)((tp-entry)/_Point), " points");
         } else {
-            tp = methodTP;
+            // Use structure TP
+            if(structureTP > entry) {
+                tp = structureTP;
+                Print("🎯 STRUCTURE TP: ", (int)((tp-entry)/_Point), " points = ",
+                      (int)((tp-entry)/_Point/10), " pips (from scoring)");
+            } else {
+                // Fallback: MinRR-based TP using ACTUAL risk
+                double actualRisk = entry - sl;
+                tp = entry + (actualRisk * m_minRR);
+                Print("⚠️ FALLBACK TP: ", (int)((tp-entry)/_Point), " points = ",
+                      (int)((tp-entry)/_Point/10), " pips (", m_minRR, "×risk)");
+            }
         }
     }
     else if(c.direction == -1) {
         // SELL SETUP
         entry = triggerLow - buffer;
         
-        // Calculate METHOD-based SL
-        double methodSL = 0;
+        // ═══════════════════════════════════════════════════════════
+        // SL CALCULATION (ICT Research Algorithm)
+        // ═══════════════════════════════════════════════════════════
+        
+        // Step 1: Structure-based SL (OB high, Swing high, Sweep level)
+        double structureSL = 0;
         if(c.hasSweep) {
-            methodSL = c.sweepLevel + buffer;
-        } else if(c.hasOB || c.hasFVG) {
-            methodSL = c.poiTop + buffer;
-        } else {
-            return false;
+            structureSL = c.sweepLevel + buffer;
+        } else if(c.hasOB) {
+            structureSL = c.poiTop + buffer;
+        } else if(c.hasFVG) {
+            structureSL = c.fvgTop + buffer;
         }
         
-        // Ensure minimum stop distance
+        // Step 2: ATR-based SL (2.0× ATR per research)
+        double atrSL = entry + (2.0 * atr);
+        
+        // Step 3: Preliminary SL = MAX(structure, ATR) for SELL
+        double preliminarySL = (structureSL > 0) ? MathMax(structureSL, atrSL) : atrSL;
+        
+        // Step 4: ATR Cap (3.5× ATR max per research)
+        double maxCapSL = entry + (3.5 * atr);
+        
+        // Step 5: Apply cap (SL không được xa hơn cap)
+        double methodSL = MathMin(preliminarySL, maxCapSL);
+        
+        // Step 6: Ensure minimum stop distance
         double slDistance = methodSL - entry;
         double minStopDistance = m_minStopPts * _Point;
         if(slDistance < minStopDistance) {
             methodSL = entry + minStopDistance;
         }
         
-        // Calculate METHOD-based TP
-        double methodRisk = methodSL - entry;
-        double methodTP = entry - (methodRisk * m_minRR);
-        
-        // Apply FIXED SL if enabled
+        // Step 7: Apply FIXED SL if enabled (override all)
         if(m_useFixedSL) {
             double fixedSL_Distance = m_fixedSL_Pips * 10 * _Point;
             sl = entry + fixedSL_Distance;
@@ -501,12 +551,22 @@ bool CExecutor::CalculateEntry(const Candidate &c, double triggerHigh, double tr
             sl = methodSL;
         }
         
-        // Apply FIXED TP if enabled
+        // Calculate DYNAMIC TP from structure
+        double structureTP = FindTPTarget(c, entry);
+        
+        // Apply FIXED TP if enabled (override structure)
         if(m_fixedTP_Enable) {
             double fixedTP_Distance = m_fixedTP_Pips * 10 * _Point;
             tp = entry - fixedTP_Distance;
         } else {
-            tp = methodTP;
+            // Use structure TP
+            if(structureTP < entry) {
+                tp = structureTP;
+            } else {
+                // Fallback: MinRR-based TP using ACTUAL risk
+                double actualRisk = sl - entry;
+                tp = entry - (actualRisk * m_minRR);
+            }
         }
     } else {
         return false;
@@ -742,4 +802,283 @@ double CExecutor::GetATR() {
     }
     return atr[0];
 }
+//+------------------------------------------------------------------+
+//| Find TP Target from Structure (ICT Research-Based)              |
+//+------------------------------------------------------------------+
+double CExecutor::FindTPTarget(const Candidate &c, double entry) {
+    if(!c.valid) return 0;
+    
+    double high[], low[], close[], open[];
+    ArraySetAsSeries(high, true);
+    ArraySetAsSeries(low, true);
+    ArraySetAsSeries(close, true);
+    ArraySetAsSeries(open, true);
+    
+    int bars = 200;  // Extended lookback per research
+    if(CopyHigh(m_symbol, m_timeframe, 0, bars, high) <= 0) return 0;
+    if(CopyLow(m_symbol, m_timeframe, 0, bars, low) <= 0) return 0;
+    if(CopyClose(m_symbol, m_timeframe, 0, bars, close) <= 0) return 0;
+    if(CopyOpen(m_symbol, m_timeframe, 0, bars, open) <= 0) return 0;
+    
+    double atr = GetATR();
+    if(atr <= 0) return 0;
+    
+    // Target scoring arrays
+    double targetPrices[];
+    double targetScores[];
+    ArrayResize(targetPrices, 0);
+    ArrayResize(targetScores, 0);
+    
+    if(c.direction == 1) {
+        // ═══════════════════════════════════════════════════════════
+        // BUY: Find resistance structures ABOVE entry
+        // ═══════════════════════════════════════════════════════════
+        
+        // TIER 1: Swing Highs (Weight: 9 points)
+        for(int i = 5; i < bars - 3; i++) {
+            bool isSwingHigh = true;
+            for(int k = 1; k <= 3; k++) {
+                if(i - k < 0 || i + k >= ArraySize(high)) {
+                    isSwingHigh = false;
+                    break;
+                }
+                if(high[i] <= high[i-k] || high[i] <= high[i+k]) {
+                    isSwingHigh = false;
+                    break;
+                }
+            }
+            
+            if(isSwingHigh && high[i] > entry) {
+                double distance = (high[i] - entry) / _Point;
+                
+                // Reasonable distance check (2-8x ATR per research)
+                double atrPoints = atr / _Point;
+                if(distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                    int idx = ArraySize(targetPrices);
+                    ArrayResize(targetPrices, idx + 1);
+                    ArrayResize(targetScores, idx + 1);
+                    
+                    targetPrices[idx] = high[i];
+                    
+                    // Base score: 9 (swing high)
+                    double score = 9.0;
+                    
+                    // Recency bonus (recent structures more relevant)
+                    if(i <= 20) score += 2.0;  // Very recent
+                    
+                    targetScores[idx] = score;
+                }
+            }
+        }
+        
+        // TIER 2: Bearish OB - Supply zones (Weight: 7 points)
+        for(int i = 5; i < 80; i++) {
+            bool isBullish = (close[i] > open[i]);
+            
+            if(isBullish && i >= 2) {
+                // Check displacement (drop after bullish candle)
+                if(close[i-1] < low[i+1]) {
+                    double obBottom = close[i];
+                    double distance = (obBottom - entry) / _Point;
+                    double atrPoints = atr / _Point;
+                    
+                    if(obBottom > entry && distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                        int idx = ArraySize(targetPrices);
+                        ArrayResize(targetPrices, idx + 1);
+                        ArrayResize(targetScores, idx + 1);
+                        
+                        targetPrices[idx] = obBottom;
+                        
+                        // Base score: 7 (opposing OB)
+                        double score = 7.0;
+                        if(i <= 20) score += 2.0;
+                        
+                        targetScores[idx] = score;
+                    }
+                }
+            }
+        }
+        
+        // TIER 3: Bearish FVG (Weight: 6 points)
+        for(int i = 2; i < 60; i++) {
+            // Bearish FVG: high[i] < low[i+2]
+            if(high[i] < low[i+2]) {
+                double fvgBottom = high[i];
+                double distance = (fvgBottom - entry) / _Point;
+                double atrPoints = atr / _Point;
+                
+                if(fvgBottom > entry && distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                    int idx = ArraySize(targetPrices);
+                    ArrayResize(targetPrices, idx + 1);
+                    ArrayResize(targetScores, idx + 1);
+                    
+                    targetPrices[idx] = fvgBottom;
+                    
+                    // Base score: 6 (FVG boundary)
+                    double score = 6.0;
+                    if(i <= 20) score += 2.0;
+                    
+                    targetScores[idx] = score;
+                }
+            }
+        }
+        
+        // TIER 1: Psychological Round Numbers (Weight: 8 points)
+        double currentPrice = entry;
+        for(int round = 0; round <= 10; round++) {
+            double roundLevel = MathCeil(currentPrice / 10.0) * 10.0 + (round * 10.0);
+            double distance = (roundLevel - entry) / _Point;
+            double atrPoints = atr / _Point;
+            
+            if(roundLevel > entry && distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                int idx = ArraySize(targetPrices);
+                ArrayResize(targetPrices, idx + 1);
+                ArrayResize(targetScores, idx + 1);
+                
+                targetPrices[idx] = roundLevel;
+                targetScores[idx] = 8.0;  // Psychological level
+            }
+        }
+    }
+    else if(c.direction == -1) {
+        // ═══════════════════════════════════════════════════════════
+        // SELL: Find support structures BELOW entry
+        // ═══════════════════════════════════════════════════════════
+        
+        // TIER 1: Swing Lows (Weight: 9 points)
+        for(int i = 5; i < bars - 3; i++) {
+            bool isSwingLow = true;
+            for(int k = 1; k <= 3; k++) {
+                if(i - k < 0 || i + k >= ArraySize(low)) {
+                    isSwingLow = false;
+                    break;
+                }
+                if(low[i] >= low[i-k] || low[i] >= low[i+k]) {
+                    isSwingLow = false;
+                    break;
+                }
+            }
+            
+            if(isSwingLow && low[i] < entry) {
+                double distance = (entry - low[i]) / _Point;
+                double atrPoints = atr / _Point;
+                
+                if(distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                    int idx = ArraySize(targetPrices);
+                    ArrayResize(targetPrices, idx + 1);
+                    ArrayResize(targetScores, idx + 1);
+                    
+                    targetPrices[idx] = low[i];
+                    
+                    double score = 9.0;
+                    if(i <= 20) score += 2.0;
+                    
+                    targetScores[idx] = score;
+                }
+            }
+        }
+        
+        // TIER 2: Bullish OB - Demand zones (Weight: 7 points)
+        for(int i = 5; i < 80; i++) {
+            bool isBearish = (close[i] < open[i]);
+            
+            if(isBearish && i >= 2) {
+                if(close[i-1] > high[i+1]) {
+                    double obTop = close[i];
+                    double distance = (entry - obTop) / _Point;
+                    double atrPoints = atr / _Point;
+                    
+                    if(obTop < entry && distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                        int idx = ArraySize(targetPrices);
+                        ArrayResize(targetPrices, idx + 1);
+                        ArrayResize(targetScores, idx + 1);
+                        
+                        targetPrices[idx] = obTop;
+                        
+                        double score = 7.0;
+                        if(i <= 20) score += 2.0;
+                        
+                        targetScores[idx] = score;
+                    }
+                }
+            }
+        }
+        
+        // TIER 3: Bullish FVG (Weight: 6 points)
+        for(int i = 2; i < 60; i++) {
+            // Bullish FVG: low[i] > high[i+2]
+            if(low[i] > high[i+2]) {
+                double fvgTop = low[i];
+                double distance = (entry - fvgTop) / _Point;
+                double atrPoints = atr / _Point;
+                
+                if(fvgTop < entry && distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                    int idx = ArraySize(targetPrices);
+                    ArrayResize(targetPrices, idx + 1);
+                    ArrayResize(targetScores, idx + 1);
+                    
+                    targetPrices[idx] = fvgTop;
+                    
+                    double score = 6.0;
+                    if(i <= 20) score += 2.0;
+                    
+                    targetScores[idx] = score;
+                }
+            }
+        }
+        
+        // TIER 1: Psychological Round Numbers (Weight: 8 points)
+        double currentPrice = entry;
+        for(int round = 0; round <= 10; round++) {
+            double roundLevel = MathFloor(currentPrice / 10.0) * 10.0 - (round * 10.0);
+            double distance = (entry - roundLevel) / _Point;
+            double atrPoints = atr / _Point;
+            
+            if(roundLevel < entry && distance >= 2.0 * atrPoints && distance <= 8.0 * atrPoints) {
+                int idx = ArraySize(targetPrices);
+                ArrayResize(targetPrices, idx + 1);
+                ArrayResize(targetScores, idx + 1);
+                
+                targetPrices[idx] = roundLevel;
+                targetScores[idx] = 8.0;
+            }
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // SCORING & SELECTION (per research)
+    // ═══════════════════════════════════════════════════════════
+    
+    if(ArraySize(targetPrices) == 0) {
+        // FALLBACK: ATR-based (per research)
+        if(c.direction == 1) {
+            return entry + (4.0 * atr);  // 4x ATR fallback
+        } else {
+            return entry - (4.0 * atr);
+        }
+    }
+    
+    // Find highest scoring target (minimum score: 8 per research)
+    double bestTarget = 0;
+    double bestScore = 0;
+    
+    for(int i = 0; i < ArraySize(targetScores); i++) {
+        if(targetScores[i] >= 8.0 && targetScores[i] > bestScore) {
+            bestScore = targetScores[i];
+            bestTarget = targetPrices[i];
+        }
+    }
+    
+    // If no target meets threshold, use fallback
+    if(bestTarget == 0) {
+        if(c.direction == 1) {
+            bestTarget = entry + (4.0 * atr);
+        } else {
+            bestTarget = entry - (4.0 * atr);
+        }
+    }
+    
+    return NormalizeDouble(bestTarget, _Digits);
+}
+
 

@@ -238,6 +238,23 @@ double CRiskManager::CalcLotsByRisk(double riskPct, double slPoints) {
     double lotsRaw = riskValue / denominator;
     double lots = NormalizeDouble(lotsRaw, 2);
     
+    // DEBUG LOGS
+    Print("═══════════════════════════════════════");
+    Print("💰 LOT CALCULATION:");
+    Print("   Balance: $", DoubleToString(balance, 2));
+    Print("   Risk %: ", riskPct, "% = $", DoubleToString(riskValue, 2));
+    Print("   SL Points: ", (int)slPoints, " (", (int)(slPoints/10), " pips)");
+    Print("   Tick Value: $", DoubleToString(tickValue, 2));
+    Print("   Tick Size: ", DoubleToString(tickSize, 5));
+    Print("   _Point: ", DoubleToString(_Point, 5));
+    Print("   Value/Point: $", DoubleToString(valuePerPoint, 4));
+    Print("   Risk Value: $", DoubleToString(riskValue, 2));
+    Print("   Denominator: ", DoubleToString(denominator, 2));
+    Print("   Lots Raw: ", DoubleToString(lotsRaw, 4));
+    Print("   Lots Final: ", DoubleToString(lots, 2));
+    Print("   SL Value: $", DoubleToString(slPoints * valuePerPoint * lots, 2));
+    Print("═══════════════════════════════════════");
+    
     // Apply limits
     double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
     double maxLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MAX);
