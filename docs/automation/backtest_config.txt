@@ -1,0 +1,38 @@
+; ═══════════════════════════════════════════════════════════════════════════
+; MetaTrader 5 Backtest Configuration
+; Used for automated EA optimization
+; ═══════════════════════════════════════════════════════════════════════════
+
+[Tester]
+; Expert Advisor settings
+Expert=Experts\V2-oat.ex5
+ExpertParameters=V2-oat.set
+
+; Symbol and timeframe
+Symbol=XAUUSD
+Period=M30
+
+; Testing period
+FromDate=2024.01.01
+ToDate=2024.12.01
+
+; Model: 0=Every tick, 1=1 minute OHLC, 2=Open prices only, 3=Math calculations, 4=Every tick based on real ticks
+Model=0
+
+; Optimization mode: 0=Disabled, 1=Slow complete, 2=Fast genetic, 3=All symbols
+Optimization=0
+
+; Initial deposit and leverage
+Deposit=10000
+Currency=USD
+Leverage=100
+
+; Visual mode (0=disabled for CLI)
+Visual=0
+
+; Report settings
+Report=tester\backtest_report
+ReplaceReport=1
+
+; Shutdown terminal after test (CRITICAL for automation)
+ShutdownTerminal=1

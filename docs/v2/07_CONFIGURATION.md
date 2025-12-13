@@ -13,7 +13,7 @@ File này mô tả tất cả tham số input của EA và cách tùy chỉnh.
 Bot cung cấp 3 preset profiles sẵn có:
 
 ### 🟢 Conservative (Low Risk)
-```cpp
+```cpp  
 struct ConservativePreset {
     // Risk
     RiskPerTrade: 0.2%
