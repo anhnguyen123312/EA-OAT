@@ -12,7 +12,6 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
 2. ✅ **Detection Layer modular** - Chia theo Phương pháp (SMC, ICT), mỗi phương pháp một file riêng
 3. ✅ **Mỗi detector tự tính entry/sl/tp và chấm điểm**
 4. ✅ **Mỗi detector output kế hoạch DCA, BE, Trail** - Lập kế hoạch quản lý position hoàn chỉnh
-5. ✅ **ARBITRATION quyết định entry và format xuống EXECUTION** 
 6. ✅ **EXECUTION thực hiện và theo dõi lệnh theo kế hoạch**
 7. ✅ **Dashboard hiển thị thông số**
 
@@ -22,7 +21,7 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
 
 ---
 
-## 🏛️ Kiến Trúc Mới (6 Layers)
+## 🏛️ Kiến Trúc Mới (5 Layers)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -53,19 +52,9 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
 │  └─ Method-specific strategy                                │
 └─────────────────────────────────────────────────────────────┘
                           │
-                          ▼ (tất cả signals)
-┌─────────────────────────────────────────────────────────────┐
-│  LAYER 2: ARBITRATION (arbiter.mqh)                        │
-│  ├─ CollectSignals() → array of SignalInfo                 │
-│  ├─ RankSignals() → sắp xếp theo score                     │
-│  ├─ SelectBest() → chọn signal tốt nhất                    │
-│  ├─ DetermineEntryMethod() → LIMIT/STOP/MARKET             │
-│  └─ FormatExecution() → ExecutionOrder struct              │
-└─────────────────────────────────────────────────────────────┘
-                          │
                           ▼ (ExecutionOrder)
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 3: EXECUTION (executor.mqh)                          │
+│  LAYER 2: EXECUTION (executor.mqh)                          │
 │  ├─ PlaceOrder() → đặt lệnh                                │
 │  ├─ TrackOrder() → theo dõi pending                         │
 │  ├─ ManagePositions() → BE, Trail, DCA                     │
@@ -74,7 +63,7 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
                           │
                           ▼ (filled orders)
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 4: RISK MANAGEMENT (risk_manager.mqh)                │
+│  LAYER 3: RISK MANAGEMENT (risk_manager.mqh)                │
 │  ├─ TrackPosition() → lưu thông tin                        │
 │  ├─ ManageDCA() → thêm lệnh DCA                            │
 │  ├─ ManageBE() → move SL về entry                          │
@@ -84,7 +73,7 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
                           │
                           ▼ (all data)
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 5: ANALYTICS (stats_manager.mqh + dashboard.mqh)     │
+│  LAYER 4: ANALYTICS (stats_manager.mqh + dashboard.mqh)     │
 │  ├─ TrackTrade() → lưu trade vào stats                     │
 │  ├─ UpdateDashboard() → hiển thị real-time                 │
 │  └─ GenerateReport() → báo cáo                           │
