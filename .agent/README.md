@@ -53,6 +53,40 @@ Bạn có thể chạy thủ công:
 - ✅ Success: Hiển thị "No errors"
 - ❌ Failed: Hiển thị errors với file và line number
 
+### Capture Requirements & Generate Knowledge
+
+**File**: `.agent/workflows/capture-requirements.md`
+
+**Mô tả**: Tự động capture yêu cầu từ user và tạo knowledge files để AI hiểu rõ context và requirements.
+
+**Khi nào chạy**:
+- Khi user yêu cầu thay đổi/update code
+- Khi user yêu cầu thêm tính năng
+- Khi user yêu cầu sửa bug hoặc refactor
+
+**Quy trình**:
+1. Capture yêu cầu từ user
+2. Phân tích context (files, docs, rules)
+3. Tạo knowledge file (AI-readable format)
+4. AI đọc knowledge trước khi implement
+
+**Knowledge File Format**:
+- Metadata (Date, ID, Status, Priority)
+- User Request (gốc)
+- Detailed Requirements
+- Business Rules & Technical Constraints
+- Context (related files, current implementation)
+- Acceptance Criteria
+- Implementation Notes
+
+**Command**:
+```powershell
+.agent/commands/generate-knowledge.ps1 `
+    -Request "User request" `
+    -Files "file1.mqh,file2.mqh" `
+    -Priority "MEDIUM"
+```
+
 ### Auto Update Documentation
 
 **File**: `.agent/workflows/update-docs.md`

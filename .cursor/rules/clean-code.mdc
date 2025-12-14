@@ -1,0 +1,8 @@
+---
+alwaysApply: true
+---
+# Agent Rules - Clean Code 
+
+- Code vừa đủ chú thích ngắn gọn đủ hiểu không dài dòng
+- Sau khi thay đổi luôn phải chạy test build tự debug và fix
+- Trước khi làm phải Hiểu rõ context, Knowdelge 

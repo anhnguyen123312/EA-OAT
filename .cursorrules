@@ -142,6 +142,74 @@ Cursor tự động cập nhật docs khi:
 
 ---
 
+## 📋 Capture Requirements & Generate Knowledge
+
+### ⚡ Tự Động Tạo Knowledge Files
+
+Khi user yêu cầu thay đổi/update code, Cursor **PHẢI TỰ ĐỘNG**:
+
+1. **Capture yêu cầu** - Ghi lại đầy đủ yêu cầu từ user
+2. **Phân tích context** - Tìm files, docs, rules liên quan
+3. **Tạo knowledge file** - Format AI-readable trong `.agent/knowledge/`
+4. **Đọc knowledge trước khi implement** - Đảm bảo hiểu chính xác
+
+### 📝 Knowledge File Format
+
+Knowledge file chứa:
+- **Metadata**: Date, ID, Status, Priority
+- **User Request**: Yêu cầu gốc (giữ nguyên)
+- **Detailed Requirements**: Chi tiết cần thay đổi
+- **Business Rules**: Rules liên quan
+- **Technical Constraints**: Constraints cần tuân thủ
+- **Context**: Related files, current implementation
+- **Acceptance Criteria**: Tiêu chí hoàn thành
+- **Implementation Notes**: Notes trong quá trình làm
+
+### 🎯 Khi Nào Tạo Knowledge File
+
+Cursor tự động tạo knowledge file khi:
+- ✅ User yêu cầu "thay đổi code", "update logic", "sửa bug"
+- ✅ User yêu cầu "thêm tính năng", "modify behavior"
+- ✅ User yêu cầu "refactor", "optimize"
+- ✅ Bất kỳ yêu cầu nào liên quan đến code changes
+
+### 📁 File Location
+
+- **Knowledge files**: `.agent/knowledge/REQ-YYYYMMDD-HHMMSS.md`
+- **Current requirement**: `.agent/knowledge/current-requirement.md`
+- **Workflow**: `.agent/workflows/capture-requirements.md`
+
+### 🔍 Quy Trình
+
+1. **User yêu cầu** → Cursor capture
+2. **Tạo knowledge file** → Format structured
+3. **Đọc knowledge** → Hiểu requirements
+4. **Implement** → Theo knowledge file
+5. **Update knowledge** → Track progress
+6. **Mark complete** → Khi hoàn thành
+
+### ✅ Requirements cho Knowledge File
+
+Knowledge file PHẢI chứa:
+- ✅ User request gốc (không paraphrase)
+- ✅ Files cần thay đổi (nếu biết)
+- ✅ Business rules liên quan
+- ✅ Technical constraints
+- ✅ Current implementation (code snippets)
+- ✅ Expected behavior
+- ✅ Acceptance criteria
+- ✅ Related files và docs
+
+### 💡 Lưu Ý
+
+- Knowledge file giúp AI hiểu **chính xác** requirements
+- Format structured để AI dễ parse
+- Luôn đọc knowledge file trước khi implement
+- Update knowledge file trong quá trình làm
+- Mark complete khi hoàn thành
+
+---
+
 ## Code Style Rules
 
 - Luôn ghi log vào bot để User có thể debug
