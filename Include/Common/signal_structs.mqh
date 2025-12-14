@@ -15,7 +15,28 @@
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
-//| Entry Method Types                                               |
+//| Order Type Enum (MT5 Order Types - Mỗi lệnh chỉ là 1 loại)      |
+//+------------------------------------------------------------------+
+enum ENUM_ORDER_TYPE {
+    // Market Orders (Thực hiện ngay tại giá thị trường)
+    ORDER_BUY = 0,              // ORDER_TYPE_BUY - Mua ngay tại giá thị trường
+    ORDER_SELL = 1,             // ORDER_TYPE_SELL - Bán ngay tại giá thị trường
+    
+    // Limit Orders (Chờ hồi về)
+    ORDER_BUY_LIMIT = 2,        // ORDER_TYPE_BUY_LIMIT - Mua khi giá giảm xuống một mức thấp hơn giá hiện tại (chờ hồi về)
+    ORDER_SELL_LIMIT = 3,       // ORDER_TYPE_SELL_LIMIT - Bán khi giá tăng lên một mức cao hơn giá hiện tại (chờ hồi về)
+    
+    // Stop Orders (Chờ phá vỡ)
+    ORDER_BUY_STOP = 4,         // ORDER_TYPE_BUY_STOP - Mua khi giá tăng vượt qua một mức cao hơn giá hiện tại (chờ phá vỡ)
+    ORDER_SELL_STOP = 5,        // ORDER_TYPE_SELL_STOP - Bán khi giá giảm xuống dưới một mức thấp hơn giá hiện tại (chờ phá vỡ)
+    
+    // Stop Limit Orders (Kết hợp Stop và Limit)
+    ORDER_BUY_STOP_LIMIT = 6,   // ORDER_TYPE_BUY_STOP_LIMIT - Đặt lệnh Buy Stop, và khi lệnh Buy Stop kích hoạt, nó sẽ đặt tiếp lệnh Buy Limit ở mức giá mong muốn
+    ORDER_SELL_STOP_LIMIT = 7   // ORDER_TYPE_SELL_STOP_LIMIT - Đặt lệnh Sell Stop, và khi lệnh Sell Stop kích hoạt, nó sẽ đặt tiếp lệnh Sell Limit ở mức giá mong muốn
+};
+
+//+------------------------------------------------------------------+
+//| Entry Method Types (Simplified)                                  |
 //+------------------------------------------------------------------+
 enum ENTRY_TYPE {
     ENTRY_STOP = 0,    // Buy/Sell Stop
@@ -222,8 +243,8 @@ struct RiskGateResult {
 //+------------------------------------------------------------------+
 struct DCAOrder {
     int      level;              // DCA level (1, 2, 3)
-    int      direction;          // 1=BUY, -1=SELL
-    int      entryType;          // ENTRY_TYPE (LIMIT, STOP, MARKET)
+    ENUM_ORDER_TYPE orderType;   // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, etc. (Mỗi lệnh chỉ là 1 loại)
+    ENTRY_TYPE entryType;        // ⭐ ENTRY_TYPE (LIMIT, STOP, MARKET) - Simplified version
     string   reason;             // "OB + FVG", "At current price", etc.
     double   entryPrice;         // Entry price
     double   slPrice;            // Stop Loss (sync với original)
@@ -255,7 +276,7 @@ struct DCAPlan {
     double   level3_lotMultiplier;
     
     // Entry method cho DCA
-    int      dcaEntryType;        // ENTRY_TYPE (LIMIT, STOP, MARKET) - use int to avoid dependency
+    ENTRY_TYPE dcaEntryType;      // ⭐ ENTRY_TYPE (LIMIT, STOP, MARKET)
     string   dcaEntryReason;     // "At current price", "At pullback", etc.
 };
 
@@ -305,7 +326,7 @@ struct PositionPlan {
 struct MethodSignal {
     bool         valid;              // Signal có hợp lệ không?
     string       methodName;         // "SMC", "ICT", etc.
-    int          direction;          // 1=BUY, -1=SELL
+    ENUM_ORDER_TYPE orderType;       // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, ORDER_SELL_LIMIT, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT
     double       score;              // Điểm chất lượng (0-1000)
     
     // Entry calculation (tự tính trong method)
@@ -314,8 +335,8 @@ struct MethodSignal {
     double       tpPrice;            // Take Profit (TP)
     double       rr;                 // Risk:Reward ratio
     
-    // Entry method
-    int          entryType;          // ENTRY_TYPE (LIMIT, STOP, MARKET) - use int to avoid dependency
+    // Entry method (simplified - backward compatibility)
+    ENTRY_TYPE   entryType;          // ⭐ ENTRY_TYPE (LIMIT, STOP, MARKET) - Simplified version
     string       entryReason;        // "OB bottom", "FVG zone", etc.
     
     // ⭐ Kế hoạch quản lý position (tự tính trong method)
@@ -345,8 +366,8 @@ struct PendingOrder {
     
     // Order information
     string      methodName;      // "SMC", "ICT", etc.
-    int         direction;       // 1=BUY, -1=SELL
-    int         entryType;       // ENTRY_TYPE (LIMIT, STOP, MARKET)
+    ENUM_ORDER_TYPE orderType;   // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, etc. (Mỗi lệnh chỉ là 1 loại)
+    ENTRY_TYPE entryType;        // ⭐ ENTRY_TYPE (LIMIT, STOP, MARKET) - Simplified version
     string      reason;          // "OB + FVG", etc.
     double      entryPrice;      // Entry price (EN)
     double      slPrice;         // Stop Loss (SL)
@@ -381,8 +402,8 @@ struct ExecutionOrder {
     
     // Order information
     string      methodName;      // "SMC", "ICT", etc.
-    int         direction;       // 1=BUY, -1=SELL
-    int         entryType;       // ENTRY_TYPE
+    ENUM_ORDER_TYPE orderType;   // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, etc. (Mỗi lệnh chỉ là 1 loại)
+    ENTRY_TYPE entryType;        // ⭐ ENTRY_TYPE - Simplified version
     string      reason;          // Entry reason
     double      entryPrice;      // Entry price (filled)
     double      slPrice;         // Stop Loss

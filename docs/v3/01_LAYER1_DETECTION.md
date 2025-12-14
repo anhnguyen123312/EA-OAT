@@ -453,7 +453,7 @@ MethodSignal CSMCMethod::Scan(const RiskGateResult &riskGate) {
 struct MethodSignal {
     bool         valid;              // ⭐ Signal có hợp lệ không?
     string       methodName;         // ⭐ "SMC", "ICT", etc.
-    int          direction;          // ⭐ 1=BUY, -1=SELL
+    ENUM_ORDER_TYPE orderType;       // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, ORDER_SELL_LIMIT, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT (Mỗi lệnh chỉ là 1 loại)
     double       score;              // ⭐ Điểm chất lượng (0-1000+)
     
     // ⭐ REQUIRED: Entry calculation
@@ -462,8 +462,8 @@ struct MethodSignal {
     double       tpPrice;            // Take Profit
     double       rr;                 // Risk:Reward ratio
     
-    // ⭐ REQUIRED: Entry method
-    int          entryType;          // ENTRY_TYPE (LIMIT, STOP, MARKET)
+    // ⭐ REQUIRED: Entry method (simplified - backward compatibility)
+    ENTRY_TYPE   entryType;          // ⭐ ENTRY_TYPE (LIMIT, STOP, MARKET) - Simplified version
     string       entryReason;        // "OB bottom", "FVG zone", etc.
     
     // ⭐ REQUIRED: Position management plan
@@ -477,10 +477,10 @@ struct MethodSignal {
 **Method PHẢI:**
 1. ✅ Set `valid = true` chỉ khi signal hợp lệ
 2. ✅ Set `methodName` = tên method (ví dụ: "SMC")
-3. ✅ Set `direction` = 1 (BUY) hoặc -1 (SELL)
+3. ✅ Set `orderType` = `ORDER_BUY`, `ORDER_SELL`, `ORDER_BUY_LIMIT`, `ORDER_SELL_LIMIT`, `ORDER_BUY_STOP`, `ORDER_SELL_STOP`, `ORDER_BUY_STOP_LIMIT`, `ORDER_SELL_STOP_LIMIT` (Mỗi lệnh chỉ là 1 loại)
 4. ✅ Set `score` ≥ 100 (minimum threshold)
 5. ✅ Calculate `entryPrice`, `slPrice`, `tpPrice`, `rr`
-6. ✅ Set `entryType` và `entryReason`
+6. ✅ Set `entryType` = `ENTRY_LIMIT`, `ENTRY_STOP`, hoặc `ENTRY_MARKET` và `entryReason` (simplified version)
 7. ✅ Create `positionPlan` với đầy đủ BE/DCA/Trail plans
 
 **Example:**
@@ -506,12 +506,12 @@ MethodSignal CSMCMethod::Scan(const RiskGateResult &riskGate) {
     }
     
     // ⭐ REQUIRED: Build signal
-    signal.direction = candidate.direction;
+    signal.orderType = ORDER_BUY_LIMIT;  // or ORDER_SELL_LIMIT, ORDER_BUY, ORDER_SELL, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT
     signal.entryPrice = entry;
     signal.slPrice = sl;
     signal.tpPrice = tp;
     signal.rr = rr;
-    signal.entryType = ENTRY_LIMIT;
+    signal.entryType = ENTRY_LIMIT;  // Simplified version
     signal.entryReason = "OB Retest Limit Entry";
     signal.score = score;
     
@@ -725,7 +725,7 @@ MethodSignal CYourMethod::Scan(const RiskGateResult &riskGate) {
     signal.valid = false;
     signal.methodName = "YourMethod";
     signal.score = 0;
-    signal.direction = 0;
+    signal.orderType = ORDER_BUY;  // Default, sẽ update sau
     
     // ═══════════════════════════════════════════════════════
     // STEP 1: Check Risk Gate (Layer 0 Integration) ⭐
@@ -771,12 +771,12 @@ MethodSignal CYourMethod::Scan(const RiskGateResult &riskGate) {
     // ═══════════════════════════════════════════════════════
     // STEP 6: Build signal (Layer 2 Integration) ⭐
     // ═══════════════════════════════════════════════════════
-    signal.direction = 1;  // or -1, based on your detection
+    signal.orderType = ORDER_BUY_LIMIT;  // or ORDER_SELL_LIMIT, ORDER_BUY, ORDER_SELL, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT
     signal.entryPrice = entry;
     signal.slPrice = sl;
     signal.tpPrice = tp;
     signal.rr = rr;
-    signal.entryType = ENTRY_LIMIT;  // or ENTRY_STOP, ENTRY_MARKET
+    signal.entryType = ENTRY_LIMIT;  // or ENTRY_STOP, ENTRY_MARKET (simplified version)
     signal.entryReason = "Your method entry reason";
     
     // ═══════════════════════════════════════════════════════
@@ -948,8 +948,8 @@ PositionPlan CYourMethod::CreatePositionPlan(const MethodSignal &signal) {
     
     // DCA Level 1
     plan.dcaPlan.dcaOrders[0].level = 1;
-    plan.dcaPlan.dcaOrders[0].direction = signal.direction;  // Same direction
-    plan.dcaPlan.dcaOrders[0].entryType = ENTRY_MARKET;
+    plan.dcaPlan.dcaOrders[0].orderType = signal.orderType;  // Same order type (ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, etc.)
+    plan.dcaPlan.dcaOrders[0].entryType = ENTRY_MARKET;  // Simplified version
     plan.dcaPlan.dcaOrders[0].reason = signal.entryReason;  // "OB + FVG"
     plan.dcaPlan.dcaOrders[0].entryPrice = signal.entryPrice;  // 4250 (hoặc tính lại)
     plan.dcaPlan.dcaOrders[0].slPrice = signal.slPrice;  // Sync với original (4245)
@@ -959,8 +959,8 @@ PositionPlan CYourMethod::CreatePositionPlan(const MethodSignal &signal) {
     
     // DCA Level 2
     plan.dcaPlan.dcaOrders[1].level = 2;
-    plan.dcaPlan.dcaOrders[1].direction = signal.direction;
-    plan.dcaPlan.dcaOrders[1].entryType = ENTRY_MARKET;
+    plan.dcaPlan.dcaOrders[1].orderType = signal.orderType;  // Same order type
+    plan.dcaPlan.dcaOrders[1].entryType = ENTRY_MARKET;  // Simplified version
     plan.dcaPlan.dcaOrders[1].reason = signal.entryReason;
     plan.dcaPlan.dcaOrders[1].entryPrice = signal.entryPrice + (signal.entryPrice - signal.slPrice) * 0.5;  // 4255
     plan.dcaPlan.dcaOrders[1].slPrice = signal.slPrice;  // Sync (4245)
@@ -1214,9 +1214,9 @@ struct MethodSignal {
     string methodName;             // "SMC", "ICT", "Custom"
     
     // Entry information
-    int direction;                 // 1 = BUY, -1 = SELL
+    ENUM_ORDER_TYPE orderType;     // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, ORDER_SELL_LIMIT, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT (Mỗi lệnh chỉ là 1 loại)
     double entryPrice;             // Entry price
-    ENTRY_TYPE entryType;          // LIMIT, STOP, MARKET
+    ENTRY_TYPE entryType;          // ⭐ LIMIT, STOP, MARKET (simplified version)
     string entryReason;            // "FVG Limit Entry", "OB Retest", etc.
     
     // Risk management
@@ -1486,6 +1486,37 @@ arbiter.CollectSignals(signals);
 - `docs/v2/code_logic/03_ARBITER.md` - Arbiter hiện tại (reference)
 ## 📤 Output Format - MethodSignal to Layer 2
 
+### 🎯 Order Types (MT5 Order Types - Mỗi lệnh chỉ là 1 loại)
+
+**Enum:** `ENUM_ORDER_TYPE`
+
+```cpp
+enum ENUM_ORDER_TYPE {
+    // Market Orders (Thực hiện ngay tại giá thị trường)
+    ORDER_BUY = 0,              // ORDER_TYPE_BUY - Mua ngay tại giá thị trường
+    ORDER_SELL = 1,             // ORDER_TYPE_SELL - Bán ngay tại giá thị trường
+    
+    // Limit Orders (Chờ hồi về)
+    ORDER_BUY_LIMIT = 2,        // ORDER_TYPE_BUY_LIMIT - Mua khi giá giảm xuống một mức thấp hơn giá hiện tại (chờ hồi về)
+    ORDER_SELL_LIMIT = 3,       // ORDER_TYPE_SELL_LIMIT - Bán khi giá tăng lên một mức cao hơn giá hiện tại (chờ hồi về)
+    
+    // Stop Orders (Chờ phá vỡ)
+    ORDER_BUY_STOP = 4,         // ORDER_TYPE_BUY_STOP - Mua khi giá tăng vượt qua một mức cao hơn giá hiện tại (chờ phá vỡ)
+    ORDER_SELL_STOP = 5,        // ORDER_TYPE_SELL_STOP - Bán khi giá giảm xuống dưới một mức thấp hơn giá hiện tại (chờ phá vỡ)
+    
+    // Stop Limit Orders (Kết hợp Stop và Limit)
+    ORDER_BUY_STOP_LIMIT = 6,   // ORDER_TYPE_BUY_STOP_LIMIT - Đặt lệnh Buy Stop, và khi lệnh Buy Stop kích hoạt, nó sẽ đặt tiếp lệnh Buy Limit ở mức giá mong muốn
+    ORDER_SELL_STOP_LIMIT = 7   // ORDER_TYPE_SELL_STOP_LIMIT - Đặt lệnh Sell Stop, và khi lệnh Sell Stop kích hoạt, nó sẽ đặt tiếp lệnh Sell Limit ở mức giá mong muốn
+};
+```
+
+**Lưu ý quan trọng:**
+- ✅ **Mỗi lệnh chỉ là 1 loại** - Không kết hợp nhiều loại
+- ✅ **ORDER_BUY/ORDER_SELL**: Market order - thực hiện ngay
+- ✅ **ORDER_BUY_LIMIT/ORDER_SELL_LIMIT**: Limit order - chờ hồi về
+- ✅ **ORDER_BUY_STOP/ORDER_SELL_STOP**: Stop order - chờ phá vỡ
+- ✅ **ORDER_BUY_STOP_LIMIT/ORDER_SELL_STOP_LIMIT**: Stop Limit order - kết hợp Stop và Limit
+
 ### 🎯 Format JSON (Reference)
 
 **Layer 1 output MethodSignal với format tương tự JSON sau:**
@@ -1493,7 +1524,7 @@ arbiter.CollectSignals(signals);
 ```json
 {
     "name": "SMC",
-    "type": "BUY",  // SELL, Buy Limit, SELL Limit, Buy Order, SELL Order
+    "type": "ORDER_BUY_LIMIT",  // ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, ORDER_SELL_LIMIT, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT
     "reason": "OB + FVG",
     "EN": 4250,     // Entry price
     "SL": 4245,     // Stop Loss
@@ -1530,7 +1561,7 @@ arbiter.CollectSignals(signals);
 struct MethodSignal {
     // Main order
     string       methodName;      // "SMC" (name)
-    int          direction;        // 1=BUY, -1=SELL (type)
+    ENUM_ORDER_TYPE orderType;    // ⭐ ORDER_BUY, ORDER_SELL, ORDER_BUY_LIMIT, ORDER_SELL_LIMIT, ORDER_BUY_STOP, ORDER_SELL_STOP, ORDER_BUY_STOP_LIMIT, ORDER_SELL_STOP_LIMIT (Mỗi lệnh chỉ là 1 loại)
     string       entryReason;      // "OB + FVG" (reason)
     double       entryPrice;       // 4250 (EN)
     double       slPrice;          // 4245 (SL)
@@ -1556,7 +1587,7 @@ struct MethodSignal {
 ```cpp
 MethodSignal signal = smc.Scan(riskGate);
 // signal.methodName = "SMC"
-// signal.direction = 1 (BUY)
+// signal.orderType = ORDER_BUY_LIMIT (hoặc ORDER_BUY, ORDER_SELL_LIMIT, ORDER_BUY_STOP, ORDER_SELL_STOP, etc.)
 // signal.entryPrice = 4250
 // signal.slPrice = 4245
 // signal.tpPrice = 4270
@@ -1575,7 +1606,7 @@ PendingOrder pendingOrders[];
 PendingOrder original;
 original.orderID = "SMC_20250121_001";  // ⭐ Unique ID
 original.methodName = "SMC";
-original.direction = 1;
+original.orderType = ORDER_BUY_LIMIT;  // ⭐ Enum từ MT5 (Mỗi lệnh chỉ là 1 loại)
 original.entryPrice = 4250;
 original.slPrice = 4245;
 original.tpPrice = 4270;
@@ -1590,7 +1621,7 @@ for(int i = 0; i < ArraySize(signal.positionPlan.dcaPlan.dcaOrders); i++) {
     PendingOrder dcaOrder;
     dcaOrder.orderID = "SMC_20250121_001_DCA" + IntegerToString(i+1);  // ⭐ ID với suffix
     dcaOrder.methodName = "SMC";
-    dcaOrder.direction = dca.direction;
+    dcaOrder.orderType = dca.orderType;
     dcaOrder.entryPrice = dca.entryPrice;
     dcaOrder.slPrice = dca.slPrice;
     dcaOrder.tpPrice = dca.tpPrice;
@@ -1615,7 +1646,7 @@ for(int i = 0; i < ArraySize(pendingOrders); i++) {
         exec.createdTime = pendingOrders[i].createdTime;
         exec.filledTime = TimeCurrent();  // ⭐ Filled time
         exec.methodName = pendingOrders[i].methodName;
-        exec.direction = pendingOrders[i].direction;
+        exec.orderType = pendingOrders[i].orderType;
         exec.entryPrice = pendingOrders[i].entryPrice;
         exec.slPrice = pendingOrders[i].slPrice;
         exec.tpPrice = pendingOrders[i].tpPrice;
@@ -1650,7 +1681,7 @@ for(int i = 0; i < ArraySize(pendingOrders); i++) {
 ```cpp
 MethodSignal signal;
 signal.methodName = "SMC";
-signal.direction = 1;
+signal.orderType = ORDER_BUY_LIMIT;  // ⭐ Enum từ MT5 (Mỗi lệnh chỉ là 1 loại)
 signal.entryPrice = 4250;
 signal.slPrice = 4245;
 signal.tpPrice = 4270;
