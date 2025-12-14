@@ -6,8 +6,12 @@
 #property version   "2.10"
 #property strict
 
-#include "stats_manager.mqh"
-#include "risk_manager.mqh"
+//+------------------------------------------------------------------+
+//| Include Common Signal Structures                                 |
+//| Analytics Layer chỉ làm nhiệm vụ visualization,                 |
+//| giao tiếp với các Layer khác qua data structures                 |
+//+------------------------------------------------------------------+
+#include "Common\signal_structs.mqh"
 
 //+------------------------------------------------------------------+
 //| CDrawDebug Class                                                  |
@@ -23,11 +27,11 @@ public:
     bool Init(string prefix);
     
     // Dashboard
-    void UpdateDashboard(string stateText, CRiskManager *riskMgr,
+    void UpdateDashboard(string stateText, const RiskManagerData &riskData,
                         string sessionInfo, double score,
-                        BOSSignal &lastBOS, SweepSignal &lastSweep,
-                        OrderBlock &lastOB, FVGSignal &lastFVG,
-                        CStatsManager *stats);
+                        const BOSSignal &lastBOS, const SweepSignal &lastSweep,
+                        const OrderBlock &lastOB, const FVGSignal &lastFVG,
+                        const StatsManagerData &statsData);
     
     // Chart markers
     void MarkBOS(int barIndex, int direction, double level, string tag);
@@ -67,11 +71,11 @@ bool CDrawDebug::Init(string prefix) {
 //+------------------------------------------------------------------+
 //| Update dashboard                                                  |
 //+------------------------------------------------------------------+
-void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr,
+void CDrawDebug::UpdateDashboard(string stateText, const RiskManagerData &riskData,
                                 string sessionInfo, double score,
-                                BOSSignal &lastBOS, SweepSignal &lastSweep,
-                                OrderBlock &lastOB, FVGSignal &lastFVG,
-                                CStatsManager *stats) {
+                                const BOSSignal &lastBOS, const SweepSignal &lastSweep,
+                                const OrderBlock &lastOB, const FVGSignal &lastFVG,
+                                const StatsManagerData &statsData) {
     
     // Build dashboard text (NO BACKGROUND - transparent)
     string dashboard = "";
@@ -92,18 +96,16 @@ void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr,
     // Account info
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-    double maxLot = (CheckPointer(riskMgr) == POINTER_DYNAMIC) ? riskMgr.GetMaxLotPerSide() : 0;
+    double maxLot = riskData.maxLotPerSide;
     
     dashboard += "──────────────────────────────────\n";
     dashboard += StringFormat("Balance: $%.2f | MaxLot: %.2f\n", balance, maxLot);
     dashboard += StringFormat("Equity:  $%.2f\n", equity);
     
     // Floating P/L
-    if(CheckPointer(riskMgr) == POINTER_DYNAMIC) {
-        double floatingPL = riskMgr.GetBasketFloatingPL();
-        double floatingPct = riskMgr.GetBasketFloatingPLPct();
-        dashboard += StringFormat("Floating: $%.2f (%+.2f%%)\n", floatingPL, floatingPct);
-    }
+    double floatingPL = riskData.basketFloatingPL;
+    double floatingPct = riskData.basketFloatingPLPct;
+    dashboard += StringFormat("Floating: $%.2f (%+.2f%%)\n", floatingPL, floatingPct);
     
     // Session info
     dashboard += "──────────────────────────────────\n";
@@ -192,31 +194,30 @@ void CDrawDebug::UpdateDashboard(string stateText, CRiskManager *riskMgr,
     dashboard += StringFormat("SHORT: %d (%.2f lots)\n", shortPos, shortLots);
     
     // Performance stats
-    if(CheckPointer(stats) == POINTER_DYNAMIC) {
-        PatternStats overall = stats.GetOverallStats();
-        
+    PatternStats overall = statsData.overall;
+    
+    dashboard += "──────────────────────────────────\n";
+    dashboard += "STATS:\n";
+    dashboard += StringFormat("Total: %d | Win: %d | Loss: %d\n",
+                             overall.totalTrades, overall.wins, overall.losses);
+    dashboard += StringFormat("Win Rate: %.1f%% | PF: %.2f\n",
+                             overall.winRate, overall.profitFactor);
+    dashboard += StringFormat("Profit: $%.2f\n", overall.totalProfit);
+    
+    // Top patterns only (if have trades)
+    if(overall.totalTrades > 0) {
         dashboard += "──────────────────────────────────\n";
-        dashboard += "STATS:\n";
-        dashboard += StringFormat("Total: %d | Win: %d | Loss: %d\n",
-                                 overall.totalTrades, overall.wins, overall.losses);
-        dashboard += StringFormat("Win Rate: %.1f%% | PF: %.2f\n",
-                                 overall.winRate, overall.profitFactor);
-        dashboard += StringFormat("Profit: $%.2f\n", overall.totalProfit);
+        dashboard += "TOP PATTERNS:\n";
         
-        // Top patterns only (if have trades)
-        if(overall.totalTrades > 0) {
-            dashboard += "──────────────────────────────────\n";
-            dashboard += "TOP PATTERNS:\n";
-            
-            PatternStats conf = stats.GetPatternStats(5);
-            if(conf.totalTrades > 0) {
-                dashboard += StringFormat("Confluence: %d (%dW/%dL) %.1f%%\n",
-                                         conf.totalTrades, conf.wins, conf.losses, conf.winRate);
-            }
-            
-            PatternStats bosOB = stats.GetPatternStats(0);
-            if(bosOB.totalTrades > 0) {
-                dashboard += StringFormat("BOS+OB: %d (%dW/%dL) %.1f%%\n",
+        PatternStats conf = statsData.patterns[5];
+        if(conf.totalTrades > 0) {
+            dashboard += StringFormat("Confluence: %d (%dW/%dL) %.1f%%\n",
+                                     conf.totalTrades, conf.wins, conf.losses, conf.winRate);
+        }
+        
+        PatternStats bosOB = statsData.patterns[0];
+        if(bosOB.totalTrades > 0) {
+            dashboard += StringFormat("BOS+OB: %d (%dW/%dL) %.1f%%\n",
                                          bosOB.totalTrades, bosOB.wins, bosOB.losses, bosOB.winRate);
             }
         }

@@ -6,105 +6,12 @@
 #property version   "2.10"
 #property strict
 
-#include "detectors.mqh"
-
 //+------------------------------------------------------------------+
-//| Pattern Types                                                     |
+//| Include Common Signal Structures                                 |
+//| Arbitration Layer chỉ làm nhiệm vụ build & score,              |
+//| giao tiếp với Detection Layer qua data structures               |
 //+------------------------------------------------------------------+
-enum PATTERN_TYPE {
-    PATTERN_BOS_OB = 0,        // BOS + Order Block
-    PATTERN_BOS_FVG = 1,       // BOS + FVG
-    PATTERN_SWEEP_OB = 2,      // Sweep + OB
-    PATTERN_SWEEP_FVG = 3,     // Sweep + FVG
-    PATTERN_MOMO = 4,          // Momentum only
-    PATTERN_CONFLUENCE = 5,    // BOS + Sweep + (OB/FVG)
-    PATTERN_OTHER = 6
-};
-
-//+------------------------------------------------------------------+
-//| Entry Method Types (v2.1)                                        |
-//+------------------------------------------------------------------+
-enum ENTRY_TYPE {
-    ENTRY_STOP = 0,    // Buy/Sell Stop
-    ENTRY_LIMIT = 1,   // Buy/Sell Limit
-    ENTRY_MARKET = 2   // Market execution
-};
-
-//+------------------------------------------------------------------+
-//| Entry Configuration (v2.1)                                       |
-//+------------------------------------------------------------------+
-struct EntryConfig {
-    ENTRY_TYPE type;
-    double price;
-    string reason;
-};
-
-//+------------------------------------------------------------------+
-//| Trade Candidate Structure                                        |
-//+------------------------------------------------------------------+
-struct Candidate {
-    bool     valid;
-    int      direction;         // 1=long, -1=short
-    double   score;             // Priority score
-    
-    // Signal flags
-    bool     hasBOS;
-    bool     hasSweep;
-    bool     hasOB;
-    bool     hasFVG;
-    bool     hasMomo;
-    
-    // POI (Point of Interest)
-    double   poiTop;
-    double   poiBottom;
-    
-    // BOS details
-    double   bosLevel;
-    
-    // Sweep details
-    double   sweepLevel;
-    int      sweepDistanceBars;
-    double   sweepProximityATR;
-    
-    // OB details
-    int      obTouches;
-    bool     obWeak;
-    bool     obStrong;
-    bool     obIsBreaker;
-    // v2.1 OB Sweep
-    bool     obHasSweep;
-    double   obSweepLevel;
-    int      obSweepDistance;
-    double   obSweepQuality;
-    
-    // FVG details
-    int      fvgState;          // 0=Valid, 1=Mitigated, 2=Completed
-    double   fvgBottom;
-    double   fvgTop;
-    // v2.1 FVG MTF
-    bool     fvgMTFOverlap;
-    double   fvgHTFTop;
-    double   fvgHTFBottom;
-    double   fvgOverlapRatio;
-    ENUM_TIMEFRAMES fvgHTFPeriod;
-    
-    // BOS Retest (v2.1)
-    int      bosRetestCount;
-    bool     bosHasRetest;
-    double   bosRetestStrength;
-    
-    // Momentum details
-    bool     momoAgainstSmc;
-    
-    // MTF details
-    int      mtfBias;
-    
-    // Entry details
-    double   entryPrice;
-    double   slPrice;
-    double   tpPrice;
-    double   rrRatio;
-};
+#include "Common\signal_structs.mqh"
 
 //+------------------------------------------------------------------+
 //| CArbiter Class                                                    |
@@ -113,12 +20,14 @@ class CArbiter {
 private:
     double   m_minRR;
     int      m_obMaxTouches;
+    string   m_symbol;  // Store symbol for _Symbol replacement
     
 public:
     CArbiter();
     ~CArbiter();
     
     bool Init(double minRR, int obMaxTouches);
+    void SetSymbol(string symbol) { m_symbol = symbol; }  // Set symbol for _Symbol replacement
     
     Candidate BuildCandidate(const BOSSignal &bos, const SweepSignal &sweep, 
                             const OrderBlock &ob, const FVGSignal &fvg, 
@@ -128,6 +37,12 @@ public:
     double ScoreCandidate(Candidate &c);
     int GetPatternType(const Candidate &c);
     EntryConfig DetermineEntryMethod(const Candidate &c);
+    
+    // ═══════════════════════════════════════════════════════════
+    // NEW: Method Signal Support (v2.1 Refactor)
+    // ═══════════════════════════════════════════════════════════
+    MethodSignal SelectBest(MethodSignal &signals[]);
+    ExecutionOrder FormatExecution(const MethodSignal &signal, const RiskGateResult &riskGate);
 };
 
 //+------------------------------------------------------------------+
@@ -150,6 +65,7 @@ CArbiter::~CArbiter() {
 bool CArbiter::Init(double minRR, int obMaxTouches) {
     m_minRR = minRR;
     m_obMaxTouches = obMaxTouches;
+    m_symbol = "";  // Will be set by FormatExecution or main EA
     
     Print("✅ CArbiter initialized | MinRR: ", m_minRR);
     return true;
@@ -553,4 +469,92 @@ int CArbiter::GetPatternType(const Candidate &c) {
     
     return PATTERN_OTHER;
 }
+
+//+------------------------------------------------------------------+
+//| Select Best Signal from Array (NEW - v2.1 Refactor)            |
+//+------------------------------------------------------------------+
+MethodSignal CArbiter::SelectBest(MethodSignal &signals[]) {
+    MethodSignal best;
+    best.valid = false;
+    best.score = 0;
+    
+    if(ArraySize(signals) == 0) {
+        return best;
+    }
+    
+    // Sort by score (descending)
+    // Simple bubble sort (small arrays)
+    for(int i = 0; i < ArraySize(signals) - 1; i++) {
+        for(int j = 0; j < ArraySize(signals) - i - 1; j++) {
+            if(signals[j].score < signals[j+1].score) {
+                MethodSignal temp = signals[j];
+                signals[j] = signals[j+1];
+                signals[j+1] = temp;
+            }
+        }
+    }
+    
+    // Return highest score
+    return signals[0];
+}
+
+//+------------------------------------------------------------------+
+//| Format Execution Order (NEW - v2.1 Refactor)                    |
+//+------------------------------------------------------------------+
+ExecutionOrder CArbiter::FormatExecution(const MethodSignal &signal, 
+                                        const RiskGateResult &riskGate) {
+    ExecutionOrder order;
+    
+    order.direction = signal.direction;
+    order.entryPrice = signal.entryPrice;
+    order.slPrice = signal.slPrice;
+    order.tpPrice = signal.tpPrice;
+    order.entryType = signal.entryType;
+    
+    // Calculate lot size (từ riskGate)
+    // Get symbol and point from signal or use default
+    string symbol = (m_symbol != "") ? m_symbol : signal.details; // Try to get from signal details or use stored
+    if(symbol == "" || StringLen(symbol) > 20) {
+        symbol = _Symbol; // Fallback to global _Symbol if available
+    }
+    
+    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+    if(point <= 0) point = 0.001; // Default for XAUUSD
+    
+    double slPips = MathAbs(signal.entryPrice - signal.slPrice) / point / 10.0; // Convert to pips
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double riskAmount = balance * (m_minRR > 0 ? 0.005 : 0.005); // Default 0.5% risk
+    
+    // Calculate lot size based on risk
+    double pipValue = 10.0; // $10 per pip per lot for XAUUSD
+    double lots = riskAmount / (slPips * pipValue);
+    
+    // Cap to maxLotSize from riskGate
+    if(lots > riskGate.maxLotSize) {
+        lots = riskGate.maxLotSize;
+    }
+    
+    // Minimum lot
+    double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+    if(lots < minLot) {
+        lots = minLot;
+    }
+    
+    order.lots = lots;
+    
+    // Comment
+    order.comment = StringFormat("%s_%s_RR%.1f", 
+                                signal.methodName,
+                                (signal.direction == 1) ? "BUY" : "SELL",
+                                signal.rr);
+    
+    // ⭐ Copy PositionPlan
+    order.positionPlan = signal.positionPlan;
+    
+    order.ticket = 0; // Will be set after order placed
+    
+    return order;
+}
+
+//+------------------------------------------------------------------+
 

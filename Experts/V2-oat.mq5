@@ -12,6 +12,12 @@
 #include "..\Include\risk_manager.mqh"
 #include "..\Include\stats_manager.mqh"
 #include "..\Include\draw_debug.mqh"
+// ═══════════════════════════════════════════════════════════
+// NEW: v2.1 Refactor - 6 Layers Architecture
+// ═══════════════════════════════════════════════════════════
+#include "..\Include\Core\risk_gate.mqh"
+#include "..\Include\Methods\method_smc.mqh"
+#include "..\Include\Common\signal_structs.mqh"
 
 //+------------------------------------------------------------------+
 //| Input Parameters - Unit Convention (per fix.md)                  |
@@ -225,14 +231,29 @@ input bool   InpShowDebugDraw   = true;  // Show debug drawings
 input bool   InpShowDashboard   = true;  // Show dashboard
 
 //+------------------------------------------------------------------+
+//| NEW: v2.1 Refactor - 6 Layers Architecture                      |
+//+------------------------------------------------------------------+
+input group "═══════ v2.1 Refactor (NEW) ═══════"
+input bool   InpUseNewFlow      = true;  // Use new 6-layer flow (v2.1 refactor)
+
+//+------------------------------------------------------------------+
 //| Global Variables                                                 |
 //+------------------------------------------------------------------+
+// ═══════════════════════════════════════════════════════════
+// OLD: Legacy components (for backward compatibility)
+// ═══════════════════════════════════════════════════════════
 CDetector*     g_detector     = NULL;
 CArbiter*      g_arbiter      = NULL;
 CExecutor*     g_executor     = NULL;
 CRiskManager*  g_riskMgr      = NULL;
 CStatsManager* g_stats        = NULL;
 CDrawDebug*    g_drawer       = NULL;
+
+// ═══════════════════════════════════════════════════════════
+// NEW: v2.1 Refactor - 6 Layers Architecture
+// ═══════════════════════════════════════════════════════════
+CRiskGate*     g_riskGate     = NULL;  // Layer 0: Risk Gate
+CSMCMethod*    g_methodSMC   = NULL;   // Layer 1: SMC Method
 
 // Signal cache
 BOSSignal      g_lastBOS;
@@ -336,6 +357,7 @@ int OnInit() {
         Print("❌ ERROR: Failed to initialize arbiter");
         return INIT_FAILED;
     }
+    g_arbiter.SetSymbol(_Symbol);  // Set symbol for _Symbol replacement
     
     // ═══════════════════════════════════════════════════════════════
     // Initialize Executor
@@ -378,6 +400,40 @@ int OnInit() {
     g_stats = new CStatsManager();
     if(!g_stats.Init(_Symbol, 500)) {
         Print("❌ ERROR: Failed to initialize stats");
+        return INIT_FAILED;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // NEW: Initialize Risk Gate (Layer 0 - v2.1 Refactor)
+    // ═══════════════════════════════════════════════════════════════
+    Print("STEP NEW 1: Creating Risk Gate...");
+    g_riskGate = new CRiskGate();
+    if(!g_riskGate.Init(_Symbol, _Period,
+                       InpRiskPerTradePct, InpDailyMddMax, InpUseDailyMDD, InpUseEquityMDD, InpDailyResetHour,
+                       true, InpFullDayStart, InpFullDayEnd,  // sessionOpen, start, end
+                       InpSpreadMaxPts, InpSpreadATRpct,
+                       InpLotBase, InpLotMax, InpEquityPerLotInc, InpLotIncrement)) {
+        Print("❌ ERROR: Failed to initialize Risk Gate");
+        return INIT_FAILED;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // NEW: Initialize SMC Method (Layer 1 - v2.1 Refactor)
+    // ═══════════════════════════════════════════════════════════════
+    Print("STEP NEW 2: Creating SMC Method...");
+    g_methodSMC = new CSMCMethod();
+    if(!g_methodSMC.Init(_Symbol, _Period,
+                         InpFractalK, InpLookbackSwing, InpMinBodyATR, InpMinBreakPts, InpBOS_TTL,
+                         InpLookbackLiq, InpMinWickPct, InpSweep_TTL,
+                         InpOB_MaxTouches, InpOB_BufferInvPts, InpOB_TTL, InpOB_VolMultiplier,
+                         InpFVG_MinPts, InpFVG_FillMinPct, InpFVG_MitigatePct,
+                         InpFVG_CompletePct, InpFVG_BufferInvPt, InpFVG_TTL, InpFVG_KeepSide,
+                         InpMomo_MinDispATR, InpMomo_FailBars, InpMomo_TTL,
+                         InpBOSRetestTolerance, InpBOSRetestMinGap,
+                         InpOBSweepMaxDist, InpFVGTolerance, InpFVGHTFMinSize,
+                         InpOB_UseDynamicSize, InpOB_MinSizePts, InpOB_ATRMultiplier,
+                         InpMinRR)) {
+        Print("❌ ERROR: Failed to initialize SMC Method");
         return INIT_FAILED;
     }
     
@@ -436,6 +492,9 @@ void OnDeinit(const int reason) {
     if(CheckPointer(g_riskMgr) == POINTER_DYNAMIC) delete g_riskMgr;
     if(CheckPointer(g_stats) == POINTER_DYNAMIC) delete g_stats;
     if(CheckPointer(g_drawer) == POINTER_DYNAMIC) delete g_drawer;
+    // NEW: Cleanup v2.1 refactor components
+    if(CheckPointer(g_riskGate) == POINTER_DYNAMIC) delete g_riskGate;
+    if(CheckPointer(g_methodSMC) == POINTER_DYNAMIC) delete g_methodSMC;
     
     Print("EA deinitialized. Reason: ", reason);
 }
@@ -445,7 +504,26 @@ void OnDeinit(const int reason) {
 //+------------------------------------------------------------------+
 void OnTick() {
     // ═══════════════════════════════════════════════════════════════
-    // STEP 0: UPDATE DASHBOARD FIRST (before any returns)
+    // NEW: v2.1 Refactor - 6 Layers Flow
+    // ═══════════════════════════════════════════════════════════════
+    if(InpUseNewFlow && CheckPointer(g_riskGate) == POINTER_DYNAMIC && 
+       CheckPointer(g_methodSMC) == POINTER_DYNAMIC) {
+        OnTick_NewFlow();
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // OLD: Legacy Flow (for backward compatibility)
+    // ═══════════════════════════════════════════════════════════════
+    OnTick_OldFlow();
+}
+
+//+------------------------------------------------------------------+
+//| OLD: Legacy OnTick Flow (renamed from original)                 |
+//+------------------------------------------------------------------+
+void OnTick_OldFlow() {
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 0: UPDATE DASHBOARD FIRST (mỗi tick)
     // ═══════════════════════════════════════════════════════════════
     static int tickCount = 0;
     tickCount++;
@@ -474,8 +552,12 @@ void OnTick() {
     if(InpShowDashboard && CheckPointer(g_drawer) == POINTER_DYNAMIC && CheckPointer(g_executor) == POINTER_DYNAMIC) {
         string sessionInfo = g_executor.GetActiveWindow();
         double score = g_lastCandidate.valid ? g_lastCandidate.score : 0;
-        g_drawer.UpdateDashboard(status, g_riskMgr, sessionInfo, score,
-                                g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, g_stats);
+        // Get data structures from managers (no direct class dependency)
+        RiskManagerData riskData = g_riskMgr.GetData();
+        StatsManagerData statsData = g_stats.GetData();
+        
+        g_drawer.UpdateDashboard(status, riskData, sessionInfo, score,
+                                g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, statsData);
     } else {
         // Log why dashboard not updating (once)
         static bool loggedWhy = false;
@@ -768,6 +850,172 @@ void OnTick() {
         if(CheckPointer(g_drawer) == POINTER_DYNAMIC) {
             g_drawer.CleanupOldObjects();
         }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| NEW: OnTick with 6 Layers Architecture - Implementation         |
+//+------------------------------------------------------------------+
+void OnTick_NewFlow() {
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 0: UPDATE DASHBOARD FIRST (mỗi tick)
+    // ═══════════════════════════════════════════════════════════════
+    static int tickCount = 0;
+    tickCount++;
+    
+    // Determine status
+    string status = "SCANNING";
+    if(CheckPointer(g_riskGate) == POINTER_DYNAMIC) {
+        RiskGateResult riskGate = g_riskGate.Check();
+        if(riskGate.tradingHalted) {
+            status = "HALTED - MDD";
+        } else if(!riskGate.canTrade) {
+            status = riskGate.reason;
+        }
+    }
+    
+    // Update dashboard
+    if(InpShowDashboard && CheckPointer(g_drawer) == POINTER_DYNAMIC && CheckPointer(g_executor) == POINTER_DYNAMIC) {
+        string sessionInfo = g_executor.GetActiveWindow();
+        // Get data structures from managers (no direct class dependency)
+        RiskManagerData riskData = g_riskMgr.GetData();
+        StatsManagerData statsData = g_stats.GetData();
+        
+        g_drawer.UpdateDashboard(status, riskData, sessionInfo, 0,
+                                g_lastBOS, g_lastSweep, g_lastOB, g_lastFVG, statsData);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 1: RISK GATE - Check đầu tiên ⭐
+    // ═══════════════════════════════════════════════════════════════
+    if(CheckPointer(g_riskGate) != POINTER_DYNAMIC) return;
+    
+    RiskGateResult riskGate = g_riskGate.Check();
+    
+    if(!riskGate.canTrade) {
+        // Chỉ manage positions, không scan signals
+        if(CheckPointer(g_executor) == POINTER_DYNAMIC) {
+            g_executor.ManagePositions();
+            g_executor.ManagePendingOrders();
+        }
+        if(CheckPointer(g_riskMgr) == POINTER_DYNAMIC) {
+            g_riskMgr.ManageOpenPositions();
+        }
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 2: DETECTION - Scan tất cả methods (SMC, ICT, etc.)
+    // ═══════════════════════════════════════════════════════════════
+    MethodSignal signals[];
+    ArrayResize(signals, 0);
+    
+    // Scan SMC method
+    if(CheckPointer(g_methodSMC) == POINTER_DYNAMIC) {
+        g_methodSMC.UpdateSeries();
+        MethodSignal sig = g_methodSMC.Scan(riskGate);
+        if(sig.valid) {
+            int size = ArraySize(signals);
+            ArrayResize(signals, size + 1);
+            signals[size] = sig;
+        }
+    }
+    
+    // Có thể thêm methods khác: g_methodICT, etc.
+    
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 3: ARBITRATION - Chọn signal tốt nhất
+    // ═══════════════════════════════════════════════════════════════
+    if(ArraySize(signals) > 0 && CheckPointer(g_arbiter) == POINTER_DYNAMIC) {
+        MethodSignal bestSignal = g_arbiter.SelectBest(signals);
+        
+        if(bestSignal.valid && bestSignal.score >= 100.0) {
+            // ═══════════════════════════════════════════════════════
+            // STEP 4: Format execution order (bao gồm PositionPlan)
+            // ═══════════════════════════════════════════════════════
+            ExecutionOrder order = g_arbiter.FormatExecution(bestSignal, riskGate);
+            
+            // ═══════════════════════════════════════════════════════
+            // STEP 5: Check existing SAME DIRECTION positions/orders
+            // ═══════════════════════════════════════════════════════
+            int sameDirPositions = 0;
+            int sameDirPendingOrders = 0;
+            
+            // Count positions in SAME direction ONLY
+            for(int i = 0; i < PositionsTotal(); i++) {
+                ulong ticket = PositionGetTicket(i);
+                if(PositionSelectByTicket(ticket)) {
+                    if(PositionGetString(POSITION_SYMBOL) == _Symbol) {
+                        long posType = PositionGetInteger(POSITION_TYPE);
+                        int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+                        if(posDir == bestSignal.direction) {
+                            sameDirPositions++;
+                        }
+                    }
+                }
+            }
+            
+            // Count pending orders in SAME direction ONLY
+            for(int i = 0; i < OrdersTotal(); i++) {
+                ulong ticket = OrderGetTicket(i);
+                if(OrderGetString(ORDER_SYMBOL) == _Symbol) {
+                    long orderType = OrderGetInteger(ORDER_TYPE);
+                    bool isSameDir = false;
+                    
+                    if(bestSignal.direction == 1 &&
+                       (orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_BUY_LIMIT)) {
+                        isSameDir = true;
+                    }
+                    if(bestSignal.direction == -1 &&
+                       (orderType == ORDER_TYPE_SELL_STOP || orderType == ORDER_TYPE_SELL_LIMIT)) {
+                        isSameDir = true;
+                    }
+                    
+                    if(isSameDir) sameDirPendingOrders++;
+                }
+            }
+            
+            // ═══════════════════════════════════════════════════════
+            // STEP 6: EXECUTION - Đặt lệnh + Lưu PositionPlan
+            // ═══════════════════════════════════════════════════════
+            if(sameDirPositions == 0 && sameDirPendingOrders == 0) {
+                if(CheckPointer(g_executor) == POINTER_DYNAMIC) {
+                    if(g_executor.PlaceOrder(order)) {
+                        g_totalTrades++;
+                        Print("═══════════════════════════════════════════");
+                        Print("📊 TRADE #", g_totalTrades, " PLACED (NEW FLOW)");
+                        Print("   Method: ", bestSignal.methodName);
+                        Print("   Direction: ", bestSignal.direction == 1 ? "BUY" : "SELL");
+                        Print("   Entry: ", bestSignal.entryPrice);
+                        Print("   SL: ", bestSignal.slPrice, " | TP: ", bestSignal.tpPrice);
+                        Print("   R:R: ", DoubleToString(bestSignal.rr, 2));
+                        Print("   Score: ", DoubleToString(bestSignal.score, 1));
+                        Print("═══════════════════════════════════════════");
+                    }
+                }
+            } else {
+                // Log why skipped
+                string dirStr = (bestSignal.direction == 1) ? "LONG" : "SHORT";
+                if(sameDirPositions > 0) {
+                    Print("⊘ ", dirStr, " entry skipped: Already have ", sameDirPositions, " ", dirStr, " position(s)");
+                }
+                if(sameDirPendingOrders > 0) {
+                    Print("⊘ ", dirStr, " entry skipped: Already have ", sameDirPendingOrders, " ", dirStr, " pending order(s)");
+                }
+            }
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 7: Manage existing positions (theo PositionPlan)
+    // ═══════════════════════════════════════════════════════════════
+    if(CheckPointer(g_executor) == POINTER_DYNAMIC) {
+        g_executor.ManagePositions();  // Execute PositionPlans
+        g_executor.ManagePendingOrders();
+    }
+    
+    if(CheckPointer(g_riskMgr) == POINTER_DYNAMIC) {
+        g_riskMgr.ManageOpenPositions();
     }
 }
 

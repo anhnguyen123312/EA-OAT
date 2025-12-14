@@ -7,6 +7,13 @@
 #property strict
 
 //+------------------------------------------------------------------+
+//| Include Common Signal Structures                                 |
+//| Risk Manager chỉ làm nhiệm vụ risk management,                  |
+//| giao tiếp với Analytics Layer qua data structures                |
+//+------------------------------------------------------------------+
+#include "Common\signal_structs.mqh"
+
+//+------------------------------------------------------------------+
 //| Helper Functions: Points/Pips Conversion (per fix.md)            |
 //+------------------------------------------------------------------+
 
@@ -151,6 +158,9 @@ public:
     double GetBasketFloatingPL();
     double GetBasketFloatingPLPct();
     void CloseAllPositions(string reason);
+    
+    // Get data structure for Analytics Layer (no dependency)
+    RiskManagerData GetData();
     
     // Helpers
     double GetATR();
@@ -849,6 +859,17 @@ void CRiskManager::CloseAllPositions(string reason) {
     
     // Clear tracking
     ArrayResize(m_positions, 0);
+}
+
+//+------------------------------------------------------------------+
+//| Get data structure for Analytics Layer                           |
+//+------------------------------------------------------------------+
+RiskManagerData CRiskManager::GetData() {
+    RiskManagerData data;
+    data.maxLotPerSide = GetMaxLotPerSide();
+    data.basketFloatingPL = GetBasketFloatingPL();
+    data.basketFloatingPLPct = GetBasketFloatingPLPct();
+    return data;
 }
 
 //+------------------------------------------------------------------+

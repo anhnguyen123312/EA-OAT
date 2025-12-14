@@ -6,7 +6,13 @@
 #property version   "2.10"
 #property strict
 
-#include "arbiter.mqh"
+//+------------------------------------------------------------------+
+//| Include Common Signal Structures                                 |
+//| Execution Layer chỉ làm nhiệm vụ execute,                       |
+//| giao tiếp với Arbitration Layer qua Candidate structure          |
+//+------------------------------------------------------------------+
+#include "Common\signal_structs.mqh"
+// Note: risk_gate.mqh forward declared - no include to avoid circular dependency
 
 //+------------------------------------------------------------------+
 //| Session Mode Enumerations                                        |
@@ -71,6 +77,15 @@ private:
     // Pending orders tracking
     PendingOrderInfo m_pendingOrders[];
     
+    // ═══════════════════════════════════════════════════════════
+    // NEW: Position Plan Tracking (v2.1 Refactor)
+    // ═══════════════════════════════════════════════════════════
+    PositionPlan m_positionPlans[];  // Map ticket → PositionPlan
+    ulong        m_ticketMap[];      // Ticket array (parallel to m_positionPlans)
+    int          m_dcaAdded[];       // Track DCA levels added (bit flags: bit0=level1, bit1=level2, bit2=level3)
+    bool         m_beMoved[];        // Track BE moved
+    double       m_lastTrailR[];     // Track last trail R
+    
 public:
     CExecutor();
     ~CExecutor();
@@ -109,6 +124,29 @@ public:
     // Helper
     double GetATR();
     double FindTPTarget(const Candidate &c, double entry);
+    
+    // ═══════════════════════════════════════════════════════════
+    // NEW: Execution Order Support (v2.1 Refactor)
+    // ═══════════════════════════════════════════════════════════
+    bool PlaceOrder(const ExecutionOrder &order);
+    void SavePositionPlan(ulong ticket, const PositionPlan &plan);
+    PositionPlan GetPositionPlan(ulong ticket);
+    void ManagePositions();  // Execute PositionPlans
+    void ExecutePositionPlan(ulong ticket, const PositionPlan &plan);
+    void ExecuteDCAPlan(ulong ticket, const DCAPlan &plan);
+    void ExecuteBEPlan(ulong ticket, const BEPlan &plan);
+    void ExecuteTrailPlan(ulong ticket, const TrailPlan &plan);
+    
+    // Helpers for position plan execution
+    double CalcProfitInR(ulong ticket);
+    bool IsDCAAdded(ulong ticket, int level);
+    void MarkDCAAdded(ulong ticket, int level);
+    bool IsBEMoved(ulong ticket);
+    void MarkBEMoved(ulong ticket);
+    double GetLastTrailR(ulong ticket);
+    void SetLastTrailR(ulong ticket, double r);
+    double GetOriginalLot(ulong ticket);
+    int GetPositionDirection(ulong ticket);
     
 private:
     int GetLocalHour();
@@ -1303,4 +1341,458 @@ double CExecutor::FindTPTarget(const Candidate &c, double entry) {
     return NormalizeDouble(bestTarget, _Digits);
 }
 
+//+------------------------------------------------------------------+
+//| Place Order from ExecutionOrder (NEW - v2.1 Refactor)            |
+//+------------------------------------------------------------------+
+bool CExecutor::PlaceOrder(const ExecutionOrder &order) {
+    // Validate
+    if(order.lots <= 0 || order.entryPrice <= 0) {
+        Print("❌ Invalid ExecutionOrder");
+        return false;
+    }
+    
+    bool success = false;
+    ulong ticket = 0;
+    
+    // Place based on entry type
+    if(order.entryType == ENTRY_LIMIT) {
+        if(order.direction == 1) {
+            MqlTradeRequest request = {};
+            MqlTradeResult result = {};
+            request.action = TRADE_ACTION_PENDING;
+            request.type = ORDER_TYPE_BUY_LIMIT;
+            request.symbol = m_symbol;
+            request.volume = order.lots;
+            request.price = order.entryPrice;
+            request.sl = order.slPrice;
+            request.tp = order.tpPrice;
+            request.comment = order.comment;
+            request.magic = 123456;
+            
+            if(OrderSend(request, result)) {
+                success = true;
+                ticket = result.order;
+            }
+        } else {
+            MqlTradeRequest request = {};
+            MqlTradeResult result = {};
+            request.action = TRADE_ACTION_PENDING;
+            request.type = ORDER_TYPE_SELL_LIMIT;
+            request.symbol = m_symbol;
+            request.volume = order.lots;
+            request.price = order.entryPrice;
+            request.sl = order.slPrice;
+            request.tp = order.tpPrice;
+            request.comment = order.comment;
+            request.magic = 123456;
+            
+            if(OrderSend(request, result)) {
+                success = true;
+                ticket = result.order;
+            }
+        }
+    } else if(order.entryType == ENTRY_STOP) {
+        // Use existing PlaceStopOrder method
+        MqlTradeRequest request = {};
+        MqlTradeResult result = {};
+        request.action = TRADE_ACTION_PENDING;
+        request.type = (order.direction == 1) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+        request.symbol = m_symbol;
+        request.volume = order.lots;
+        request.price = order.entryPrice;
+        request.sl = order.slPrice;
+        request.tp = order.tpPrice;
+        request.comment = order.comment;
+        request.magic = 123456;
+        
+        if(OrderSend(request, result)) {
+            success = true;
+            ticket = result.order;
+        }
+    } else {
+        // MARKET order
+        MqlTradeRequest request = {};
+        MqlTradeResult result = {};
+        request.action = TRADE_ACTION_DEAL;
+        request.type = (order.direction == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+        request.symbol = m_symbol;
+        request.volume = order.lots;
+        request.price = (order.direction == 1) ? SymbolInfoDouble(m_symbol, SYMBOL_ASK) : SymbolInfoDouble(m_symbol, SYMBOL_BID);
+        request.sl = order.slPrice;
+        request.tp = order.tpPrice;
+        request.comment = order.comment;
+        request.magic = 123456;
+        
+        if(OrderSend(request, result)) {
+            success = true;
+            ticket = result.order;
+        }
+    }
+    
+    if(success && ticket > 0) {
+        // Save PositionPlan
+        SavePositionPlan(ticket, order.positionPlan);
+        Print("✅ Order placed: ", order.comment, " | Ticket: ", ticket);
+    }
+    
+    return success;
+}
+
+//+------------------------------------------------------------------+
+//| Save Position Plan (NEW - v2.1 Refactor)                        |
+//+------------------------------------------------------------------+
+void CExecutor::SavePositionPlan(ulong ticket, const PositionPlan &plan) {
+    // Find existing or add new
+    int idx = -1;
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            idx = i;
+            break;
+        }
+    }
+    
+    if(idx < 0) {
+        // Add new
+        idx = ArraySize(m_ticketMap);
+        ArrayResize(m_ticketMap, idx + 1);
+        ArrayResize(m_positionPlans, idx + 1);
+        ArrayResize(m_dcaAdded, idx + 1);
+        ArrayResize(m_beMoved, idx + 1);
+        ArrayResize(m_lastTrailR, idx + 1);
+        
+        // Initialize arrays
+        m_dcaAdded[idx] = 0;  // Bit flags: 0 = no DCA added
+        m_beMoved[idx] = false;
+        m_lastTrailR[idx] = 0.0;
+    }
+    
+    m_ticketMap[idx] = ticket;
+    m_positionPlans[idx] = plan;
+}
+
+//+------------------------------------------------------------------+
+//| Get Position Plan (NEW - v2.1 Refactor)                          |
+//+------------------------------------------------------------------+
+PositionPlan CExecutor::GetPositionPlan(ulong ticket) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            return m_positionPlans[i];
+        }
+    }
+    
+    // Return default plan if not found
+    PositionPlan defaultPlan;
+    defaultPlan.dcaPlan.enabled = false;
+    defaultPlan.bePlan.enabled = false;
+    defaultPlan.trailPlan.enabled = false;
+    return defaultPlan;
+}
+
+//+------------------------------------------------------------------+
+//| Manage Positions - Execute PositionPlans (NEW - v2.1 Refactor)  |
+//+------------------------------------------------------------------+
+void CExecutor::ManagePositions() {
+    // Execute PositionPlan for each open position
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        
+        if(PositionSelectByTicket(ticket)) {
+            if(PositionGetString(POSITION_SYMBOL) == m_symbol) {
+                PositionPlan plan = GetPositionPlan(ticket);
+                ExecutePositionPlan(ticket, plan);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Position Plan (NEW - v2.1 Refactor)                      |
+//+------------------------------------------------------------------+
+void CExecutor::ExecutePositionPlan(ulong ticket, const PositionPlan &plan) {
+    // Execute DCA Plan
+    if(plan.dcaPlan.enabled) {
+        ExecuteDCAPlan(ticket, plan.dcaPlan);
+    }
+    
+    // Execute BE Plan
+    if(plan.bePlan.enabled) {
+        ExecuteBEPlan(ticket, plan.bePlan);
+    }
+    
+    // Execute Trail Plan
+    if(plan.trailPlan.enabled) {
+        ExecuteTrailPlan(ticket, plan.trailPlan);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute DCA Plan (NEW - v2.1 Refactor)                           |
+//+------------------------------------------------------------------+
+void CExecutor::ExecuteDCAPlan(ulong ticket, const DCAPlan &plan) {
+    double profitR = CalcProfitInR(ticket);
+    
+    // Check DCA Level 1
+    if(plan.maxLevels >= 1 && profitR >= plan.level1_triggerR) {
+        if(!IsDCAAdded(ticket, 1)) {
+            double originalLot = GetOriginalLot(ticket);
+            double dcaLot = originalLot * plan.level1_lotMultiplier;
+            int direction = GetPositionDirection(ticket);
+            
+            // Place DCA order (simplified - need to integrate with risk_manager)
+            Print("📊 DCA Level 1 triggered for ticket ", ticket, " | Lot: ", dcaLot);
+            MarkDCAAdded(ticket, 1);
+        }
+    }
+    
+    // Check DCA Level 2
+    if(plan.maxLevels >= 2 && profitR >= plan.level2_triggerR) {
+        if(!IsDCAAdded(ticket, 2)) {
+            double originalLot = GetOriginalLot(ticket);
+            double dcaLot = originalLot * plan.level2_lotMultiplier;
+            int direction = GetPositionDirection(ticket);
+            
+            Print("📊 DCA Level 2 triggered for ticket ", ticket, " | Lot: ", dcaLot);
+            MarkDCAAdded(ticket, 2);
+        }
+    }
+    
+    // Check DCA Level 3 (if exists)
+    if(plan.maxLevels >= 3 && profitR >= plan.level3_triggerR) {
+        if(!IsDCAAdded(ticket, 3)) {
+            double originalLot = GetOriginalLot(ticket);
+            double dcaLot = originalLot * plan.level3_lotMultiplier;
+            int direction = GetPositionDirection(ticket);
+            
+            Print("📊 DCA Level 3 triggered for ticket ", ticket, " | Lot: ", dcaLot);
+            MarkDCAAdded(ticket, 3);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute BE Plan (NEW - v2.1 Refactor)                            |
+//+------------------------------------------------------------------+
+void CExecutor::ExecuteBEPlan(ulong ticket, const BEPlan &plan) {
+    double profitR = CalcProfitInR(ticket);
+    
+    if(profitR >= plan.triggerR && !IsBEMoved(ticket)) {
+        if(plan.moveAllPositions) {
+            // Move all positions same direction
+            int direction = GetPositionDirection(ticket);
+            // Need to integrate with risk_manager
+            Print("📊 BE triggered for all ", (direction == 1 ? "LONG" : "SHORT"), " positions");
+        } else {
+            // Move only this position
+            if(PositionSelectByTicket(ticket)) {
+                double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+                double tp = PositionGetDouble(POSITION_TP);
+                int digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+                entry = NormalizeDouble(entry, digits);
+                tp = NormalizeDouble(tp, digits);
+                
+                // Use OrderSend with TRADE_ACTION_SLTP to modify position
+                MqlTradeRequest request;
+                MqlTradeResult result;
+                ZeroMemory(request);
+                ZeroMemory(result);
+                
+                request.action = TRADE_ACTION_SLTP;
+                request.position = ticket;
+                request.symbol = m_symbol;
+                request.sl = entry;
+                request.tp = tp;
+                
+                if(OrderSend(request, result) && result.retcode == TRADE_RETCODE_DONE) {
+                    Print("✅ BE moved for ticket ", ticket);
+                }
+            }
+        }
+        MarkBEMoved(ticket);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Trail Plan (NEW - v2.1 Refactor)                          |
+//+------------------------------------------------------------------+
+void CExecutor::ExecuteTrailPlan(ulong ticket, const TrailPlan &plan) {
+    double profitR = CalcProfitInR(ticket);
+    
+    if(profitR >= plan.startR) {
+        double lastTrailR = GetLastTrailR(ticket);
+        
+        // Check if need to trail (step check)
+        if(profitR >= lastTrailR + plan.stepR) {
+            // Calculate new SL based on ATR distance
+            double atr = GetATR();
+            double distance = plan.distanceATR * atr;
+            double currentSL = PositionGetDouble(POSITION_SL);
+            double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+            int direction = GetPositionDirection(ticket);
+            
+            double newSL = 0;
+            if(direction == 1) {
+                // BUY: SL = current price - distance
+                double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+                newSL = currentPrice - distance;
+                if(newSL > currentSL && newSL < entry) {
+                    newSL = entry; // Don't go below entry
+                }
+            } else {
+                // SELL: SL = current price + distance
+                double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+                newSL = currentPrice + distance;
+                if(newSL < currentSL && newSL > entry) {
+                    newSL = entry; // Don't go above entry
+                }
+            }
+            
+            if(newSL > 0) {
+                if(PositionSelectByTicket(ticket)) {
+                    double tp = PositionGetDouble(POSITION_TP);
+                    int digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+                    newSL = NormalizeDouble(newSL, digits);
+                    tp = NormalizeDouble(tp, digits);
+                    
+                    // Use OrderSend with TRADE_ACTION_SLTP to modify position
+                    MqlTradeRequest request;
+                    MqlTradeResult result;
+                    ZeroMemory(request);
+                    ZeroMemory(result);
+                    
+                    request.action = TRADE_ACTION_SLTP;
+                    request.position = ticket;
+                    request.symbol = m_symbol;
+                    request.sl = newSL;
+                    request.tp = tp;
+                    
+                    if(OrderSend(request, result) && result.retcode == TRADE_RETCODE_DONE) {
+                        SetLastTrailR(ticket, profitR);
+                        Print("✅ Trailing stop updated for ticket ", ticket, " | New SL: ", newSL);
+                    }
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Calculate Profit in R (NEW - v2.1 Refactor)             |
+//+------------------------------------------------------------------+
+double CExecutor::CalcProfitInR(ulong ticket) {
+    if(!PositionSelectByTicket(ticket)) return 0;
+    
+    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+    double sl = PositionGetDouble(POSITION_SL);
+    double currentPrice = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 
+                         SymbolInfoDouble(m_symbol, SYMBOL_BID) : 
+                         SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+    
+    double slDistance = MathAbs(entry - sl);
+    if(slDistance <= 0) return 0;
+    
+    double profitDistance = MathAbs(currentPrice - entry);
+    return profitDistance / slDistance;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Check if DCA Added (NEW - v2.1 Refactor)                 |
+//+------------------------------------------------------------------+
+bool CExecutor::IsDCAAdded(ulong ticket, int level) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            if(level >= 1 && level <= 3) {
+                int bit = level - 1;  // bit 0, 1, or 2
+                return ((m_dcaAdded[i] & (1 << bit)) != 0);
+            }
+        }
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Mark DCA Added (NEW - v2.1 Refactor)                    |
+//+------------------------------------------------------------------+
+void CExecutor::MarkDCAAdded(ulong ticket, int level) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            if(level >= 1 && level <= 3) {
+                int bit = level - 1;  // bit 0, 1, or 2
+                m_dcaAdded[i] |= (1 << bit);  // Set bit
+            }
+            break;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Check if BE Moved (NEW - v2.1 Refactor)                  |
+//+------------------------------------------------------------------+
+bool CExecutor::IsBEMoved(ulong ticket) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            return m_beMoved[i];
+        }
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Mark BE Moved (NEW - v2.1 Refactor)                     |
+//+------------------------------------------------------------------+
+void CExecutor::MarkBEMoved(ulong ticket) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            m_beMoved[i] = true;
+            break;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Get Last Trail R (NEW - v2.1 Refactor)                   |
+//+------------------------------------------------------------------+
+double CExecutor::GetLastTrailR(ulong ticket) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            return m_lastTrailR[i];
+        }
+    }
+    return 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Set Last Trail R (NEW - v2.1 Refactor)                   |
+//+------------------------------------------------------------------+
+void CExecutor::SetLastTrailR(ulong ticket, double r) {
+    for(int i = 0; i < ArraySize(m_ticketMap); i++) {
+        if(m_ticketMap[i] == ticket) {
+            m_lastTrailR[i] = r;
+            break;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Get Original Lot (NEW - v2.1 Refactor)                   |
+//+------------------------------------------------------------------+
+double CExecutor::GetOriginalLot(ulong ticket) {
+    if(PositionSelectByTicket(ticket)) {
+        return PositionGetDouble(POSITION_VOLUME);
+    }
+    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Get Position Direction (NEW - v2.1 Refactor)             |
+//+------------------------------------------------------------------+
+int CExecutor::GetPositionDirection(ulong ticket) {
+    if(PositionSelectByTicket(ticket)) {
+        long posType = PositionGetInteger(POSITION_TYPE);
+        return (posType == POSITION_TYPE_BUY) ? 1 : -1;
+    }
+    return 0;
+}
+
+//+------------------------------------------------------------------+
 

@@ -7,6 +7,13 @@
 #property strict
 
 //+------------------------------------------------------------------+
+//| Include Common Signal Structures                                 |
+//| Stats Manager chỉ làm nhiệm vụ track stats,                     |
+//| giao tiếp với Analytics Layer qua data structures                |
+//+------------------------------------------------------------------+
+#include "Common\signal_structs.mqh"
+
+//+------------------------------------------------------------------+
 //| Trade Record                                                      |
 //+------------------------------------------------------------------+
 struct TradeRecord {
@@ -23,22 +30,6 @@ struct TradeRecord {
     double   rr;
     int      slPips;
     int      tpPips;
-};
-
-//+------------------------------------------------------------------+
-//| Pattern Statistics                                               |
-//+------------------------------------------------------------------+
-struct PatternStats {
-    int      totalTrades;
-    int      wins;
-    int      losses;
-    double   winRate;
-    double   totalProfit;
-    double   avgProfit;
-    double   avgWin;
-    double   avgLoss;
-    double   profitFactor;
-    double   avgRR;
 };
 
 //+------------------------------------------------------------------+
@@ -63,6 +54,9 @@ public:
     
     PatternStats GetOverallStats();
     PatternStats GetPatternStats(int patternType);
+    
+    // Get data structure for Analytics Layer (no dependency)
+    StatsManagerData GetData();
     
     string GetPatternName(int patternType);
 };
@@ -274,6 +268,18 @@ PatternStats CStatsManager::GetPatternStats(int patternType) {
     }
     
     return stats;
+}
+
+//+------------------------------------------------------------------+
+//| Get data structure for Analytics Layer                           |
+//+------------------------------------------------------------------+
+StatsManagerData CStatsManager::GetData() {
+    StatsManagerData data;
+    data.overall = GetOverallStats();
+    for(int i = 0; i < 7; i++) {
+        data.patterns[i] = GetPatternStats(i);
+    }
+    return data;
 }
 
 //+------------------------------------------------------------------+

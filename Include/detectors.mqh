@@ -7,88 +7,10 @@
 #property strict
 
 //+------------------------------------------------------------------+
-//| Signal Structures                                                |
+//| Include Common Signal Structures                                 |
+//| Detection Layer chỉ làm nhiệm vụ detect, giao tiếp qua data     |
 //+------------------------------------------------------------------+
-
-// BOS (Break of Structure) Signal
-struct BOSSignal {
-    bool     valid;
-    int      direction;         // 1=bullish, -1=bearish
-    datetime detectedTime;
-    double   breakLevel;        // Price level broken
-    int      barsAge;
-    int      ttl;
-    // v2.1 additions
-    int      retestCount;       // Number of retests
-    datetime lastRetestTime;    // Last retest timestamp
-    bool     hasRetest;         // At least 1 retest
-    double   retestStrength;    // 0-1 quality score
-};
-
-// Liquidity Sweep Signal
-struct SweepSignal {
-    bool     detected;
-    int      side;              // 1=buy-side high, -1=sell-side low
-    double   level;             // Fractal price level
-    datetime time;
-    int      distanceBars;      // Distance to fractal
-    bool     valid;
-    double   proximityATR;      // v2.0: Distance / ATR
-};
-
-// Order Block Structure
-struct OrderBlock {
-    bool     valid;
-    int      direction;         // 1=demand, -1=supply
-    double   priceTop;
-    double   priceBottom;
-    datetime createdTime;
-    int      touches;           // Number of touches
-    bool     weak;              // Volume < 1.3x avg
-    bool     isBreaker;         // Invalidated → Breaker Block
-    long     volume;            // Candle volume
-    // v2.1 additions
-    bool     hasSweepNearby;    // Has sweep validation
-    double   sweepLevel;        // Sweep price
-    int      sweepDistancePts;  // Distance in points
-    double   sweepQuality;      // 0-1 quality score
-    double   size;              // Actual OB size (high - low)
-};
-
-// Fair Value Gap Signal
-struct FVGSignal {
-    bool     valid;
-    int      direction;         // 1=bullish, -1=bearish
-    double   priceTop;
-    double   priceBottom;
-    datetime createdTime;
-    int      state;             // 0=Valid, 1=Mitigated, 2=Completed
-    double   fillPct;           // % filled
-    double   initialSize;       // Original gap size
-    // v2.1 additions
-    bool     mtfOverlap;        // HTF confirmation
-    double   htfFVGTop;         // HTF FVG top
-    double   htfFVGBottom;      // HTF FVG bottom
-    double   overlapRatio;      // LTF size / HTF size
-    ENUM_TIMEFRAMES htfPeriod;  // Which HTF
-};
-
-// Momentum Signal
-struct MomentumSignal {
-    bool     valid;
-    int      direction;         // 1=bullish, -1=bearish
-    int      consecutiveBars;
-    datetime detectedTime;
-    int      ttl;
-};
-
-// Swing Point Structure
-struct Swing {
-    int      index;
-    double   price;
-    datetime time;
-    bool     valid;
-};
+#include "Common\signal_structs.mqh"
 
 //+------------------------------------------------------------------+
 //| CDetector Class - Signal Detection                               |
