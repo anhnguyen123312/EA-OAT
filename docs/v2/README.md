@@ -1,294 +1,212 @@
-# SMC/ICT EA v1.2 - Documentation
+# SMC/ICT Expert Advisor v2.1 - Cấu Trúc Tài Liệu
 
-## 📚 Mục Lục
+## 📁 Tổ Chức Tài Liệu
 
-1. [Tổng Quan Hệ Thống](01_SYSTEM_OVERVIEW.md)
-2. [Phát Hiện Tín Hiệu (Detectors)](02_DETECTORS.md) - **Updated v2.0** 🆕
-3. [Quyết Định Giao Dịch (Arbiter)](03_ARBITER.md) - **Updated v2.0** 🆕
-4. [Thực Thi Lệnh (Executor)](04_EXECUTOR.md) - **Updated v2.0** 🆕
-5. [Quản Lý Rủi Ro (Risk Manager)](05_RISK_MANAGER.md) - **Updated v2.0** 🆕
-6. [Thống Kê & Dashboard](06_STATS_DASHBOARD.md)
-7. [Cấu Hình & Tham Số](07_CONFIGURATION.md) - **Updated v2.0** 🆕
-8. [Luồng Hoạt Động Chính](08_MAIN_FLOW.md) - **Updated v2.0** 🆕
-9. [Ví Dụ Thực Tế](09_EXAMPLES.md)
-10. [🔮 Roadmap Cải Tiến](10_IMPROVEMENTS_ROADMAP.md) - **NEW** 🔥
+Tài liệu đã được tổ chức lại thành hai thư mục chính để dễ đọc và bảo trì:
 
----
+### 📊 **business/** - Tài Liệu Kinh Doanh/Chiến Lược
+**Mục đích**: Dành cho trader và người lập chiến lược, tập trung vào khái niệm cấp cao, tham số cấu hình và ứng dụng thực tế
 
-## 🚀 Tài Liệu Bổ Sung
+**Nội dung bao gồm**:
+- Tổng quan hệ thống và kiến trúc
+- Hướng dẫn tham số cấu hình
+- Ví dụ giao dịch thực tế
+- Lộ trình cải tiến
+- Hướng dẫn sử dụng tính năng (cơ chế DCA, giao dịch đa phiên, v.v.)
+- Tóm tắt cập nhật phiên bản và tham chiếu nhanh
 
-### Feature Guides
-- [Multi-Session Trading](MULTI_SESSION_TRADING.md) - **NEW** 🔥 Hướng dẫn 2 chế độ trading
-- [Multi-Session Implementation](MULTI_SESSION_IMPLEMENTATION.md) - **NEW** 🔧 Hướng dẫn code
-- [Multi-Session Quick Reference](MULTI_SESSION_QUICK_REF.md) - **NEW** ⚡ Cheat sheet
-- [DCA Mechanism](DCA_MECHANISM.md) - Chi tiết về pyramiding
-- [Timezone Conversion](TIMEZONE_CONVERSION.md) - Hướng dẫn timezone
-
-### Status & Summary
-- [Documentation Complete](DOCUMENTATION_COMPLETE.md) - **NEW** ✅ Tổng kết hoàn thành
-- [Update Summary](UPDATE_SUMMARY.md) - **NEW** 📝 Tóm tắt cập nhật
+**Phù hợp cho**: 
+- Trader (hiểu logic chiến lược)
+- Người điều chỉnh tham số (tinh chỉnh cấu hình)
+- Người lập chiến lược (lập kế hoạch cải tiến)
 
 ---
 
-## 🎯 Mục Đích
+### 💻 **code_logic/** - Tài Liệu Code/Logic
+**Mục đích**: Dành cho developer, mô tả chi tiết triển khai code, logic thuật toán và chi tiết kỹ thuật
 
-Bot EA này được thiết kế để giao dịch tự động dựa trên phương pháp **Smart Money Concepts (SMC)** và **Inner Circle Trader (ICT)**, kết hợp với:
-- Phát hiện cấu trúc thị trường (BOS/CHOCH)
-- Liquidity Sweep
-- Order Block & Fair Value Gap
-- Momentum Breakout
-- Quản lý vị thế động (DCA, Breakeven, Trailing)
+**Nội dung bao gồm**:
+- Thuật toán detector chi tiết (BOS, Sweep, OB, FVG, Momentum)
+- Logic scoring arbiter
+- Chi tiết triển khai executor
+- Thuật toán quản lý rủi ro
+- Triển khai dashboard thống kê
+- Logic code luồng chính
+- Hướng dẫn triển khai kỹ thuật (triển khai đa phiên, chuyển đổi múi giờ)
+- Tài liệu sửa lỗi Bug
 
----
-
-## 📊 Kiến Trúc Hệ Thống
-
-```
-┌─────────────────────────────────────────────────────┐
-│              SMC_ICT_EA.mq5 (Main EA)               │
-│                                                     │
-│  OnInit() → OnTick() → OnTrade() → OnTimer()       │
-└──────────────┬──────────────────────────────────────┘
-               │
-       ┌───────┴────────┬───────────────┬──────────────┐
-       ▼                ▼               ▼              ▼
-┌─────────────┐  ┌─────────────┐  ┌──────────┐  ┌──────────┐
-│ DETECTORS   │  │  ARBITER    │  │ EXECUTOR │  │   RISK   │
-│             │  │             │  │          │  │  MANAGER │
-│ - BOS       │→ │ - Build     │→ │ - Entry  │→ │ - DCA    │
-│ - Sweep     │  │   Candidate │  │ - SL/TP  │  │ - BE     │
-│ - OB        │  │ - Score     │  │ - Orders │  │ - Trail  │
-│ - FVG       │  │ - Filter    │  │          │  │ - MDD    │
-│ - Momentum  │  │             │  │          │  │          │
-└─────────────┘  └─────────────┘  └──────────┘  └──────────┘
-       │                                              │
-       └──────────────────┬───────────────────────────┘
-                          ▼
-                  ┌──────────────┐
-                  │   STATS &    │
-                  │  DASHBOARD   │
-                  └──────────────┘
-```
+**Phù hợp cho**:
+- Developer (triển khai và bảo trì code)
+- Người tối ưu thuật toán (cải thiện logic phát hiện)
+- Người kiểm tra kỹ thuật (kiểm tra chất lượng code)
 
 ---
 
-## 🚀 Quick Start
+## 📚 Điều Hướng Nhanh
 
-### Bước 1: Cài Đặt
-1. Copy tất cả file `.mqh` vào folder `Include/`
-2. Copy `SMC_ICT_EA.mq5` vào folder `Experts/`
-3. Compile EA trong MetaEditor
+### ⭐ Nếu bạn là Trader (muốn hiểu chiến lược):
+1. 📖 [business/TRADING_RULES.md](business/TRADING_RULES.md) - **ĐỌC ĐẦU TIÊN** - Tổng hợp tất cả quy tắc
+2. 📖 [business/ENTRY_RULES.md](business/ENTRY_RULES.md) - Quy tắc entry vào lệnh
+3. 📖 [business/RISK_MANAGEMENT_RULES.md](business/RISK_MANAGEMENT_RULES.md) - Quy tắc quản lý vốn
+4. 📖 [business/TRADING_SCHEDULE.md](business/TRADING_SCHEDULE.md) - Thời gian giao dịch
+5. 📖 [business/09_EXAMPLES.md](business/09_EXAMPLES.md) - Ví dụ giao dịch thực tế
+6. 📖 [business/07_CONFIGURATION.md](business/07_CONFIGURATION.md) - Tham số cấu hình
 
-### Bước 2: Chọn Preset
-Chọn một trong 3 preset có sẵn:
-- **Conservative**: Risk thấp, không DCA
-- **Balanced**: Cân bằng, DCA 2 levels (Khuyến nghị)
-- **Aggressive**: Risk cao, DCA 3 levels
+### Nếu bạn là Developer (muốn triển khai code):
+1. 📖 [code_logic/02_DETECTORS.md](code_logic/02_DETECTORS.md) - Thuật toán detector
+2. 📖 [code_logic/03_ARBITER.md](code_logic/03_ARBITER.md) - Logic scoring
+3. 📖 [code_logic/04_EXECUTOR.md](code_logic/04_EXECUTOR.md) - Triển khai executor
+4. 📖 [code_logic/08_MAIN_FLOW.md](code_logic/08_MAIN_FLOW.md) - Luồng chính
 
-### Bước 3: Backtest
-1. Chạy Strategy Tester trên XAUUSD M15
-2. Kiểm tra Dashboard và Stats
-3. Điều chỉnh tham số nếu cần
-
----
-
-## ⚙️ Tham Số Chính
-
-| Tham Số | Mô Tả | Giá Trị Mặc Định |
-|---------|-------|------------------|
-| `InpRiskPerTradePct` | Rủi ro mỗi lệnh (% equity) | 0.5% |
-| `InpMinRR` | Tỷ lệ R:R tối thiểu | 2.0 |
-| `InpDailyMddMax` | MDD tối đa mỗi ngày (%) | 8.0% |
-| `InpEnableDCA` | Bật DCA (Pyramiding) | true |
-| `InpEnableBE` | Bật Breakeven | true |
-| `InpEnableTrailing` | Bật Trailing Stop | true |
-| `InpLotBase` | Lot cơ bản | 0.1 |
-| `InpLotMax` | Lot tối đa | 5.0 |
+### Nếu bạn muốn tìm hiểu tính năng mới v2.1:
+1. 📖 [business/V2.1_UPDATES_SUMMARY.md](business/V2.1_UPDATES_SUMMARY.md) - Tóm tắt cập nhật
+2. 📖 [business/V2.1_QUICK_REFERENCE.md](business/V2.1_QUICK_REFERENCE.md) - Tham chiếu nhanh
+3. 📖 [business/README_V2.1.md](business/README_V2.1.md) - Tổng quan v2.1
 
 ---
 
-## 📈 Tính Năng Chính
+## 🎯 Giải Thích Phân Loại Tài Liệu
 
-### 1. Phát Hiện Tín Hiệu Đa Tầng
-- ✅ Break of Structure (BOS/CHOCH)
-- ✅ Liquidity Sweep (Fractal-based)
-- ✅ Order Block (Demand/Supply zones)
-- ✅ Fair Value Gap (Imbalance)
-- ✅ Momentum Breakout
+### Danh Sách File Thư Mục Business
 
-### 2. Quản Lý Vị Thế Thông Minh
-- ✅ DCA (Dollar Cost Averaging) khi profit tăng
-- ✅ Breakeven tự động khi đạt +1R
-- ✅ Trailing Stop động theo ATR
-- ✅ Basket TP/SL cho toàn bộ vị thế
+#### ⭐ Quy Tắc Giao Dịch (Đọc Đầu Tiên)
+| File | Nội Dung | Mục Đích |
+|------|----------|----------|
+| `TRADING_RULES.md` | **Tổng hợp tất cả quy tắc giao dịch** | Đọc đầu tiên - Hiểu toàn bộ quy tắc |
+| `ENTRY_RULES.md` | **Quy tắc và điều kiện entry vào lệnh** | Hiểu khi nào bot entry |
+| `RISK_MANAGEMENT_RULES.md` | **Quy tắc quản lý vốn** | Hiểu cách bot quản lý rủi ro |
+| `TRADING_SCHEDULE.md` | **Thời gian giao dịch** | Hiểu khi nào bot trade |
 
-### 3. Bảo Vệ Vốn
-- ✅ Daily MDD Limit (Equity)
-- ✅ Dynamic Lot Sizing theo equity
-- ✅ Session & Spread Filter
-- ✅ Rollover Protection
+#### Tài Liệu Cốt Lõi
+| File | Nội Dung | Mục Đích |
+|------|----------|----------|
+| `README.md` | Tổng quan dự án | Hướng dẫn bắt đầu |
+| `README_V2.1.md` | Mô tả phiên bản v2.1 | Tìm hiểu tính năng mới |
+| `01_SYSTEM_OVERVIEW.md` | Tổng quan kiến trúc 5 lớp | Hiểu thiết kế hệ thống |
+| `07_CONFIGURATION.md` | Tất cả tham số cấu hình | Điều chỉnh cài đặt EA |
+| `09_EXAMPLES.md` | Ví dụ giao dịch thực tế | Học ứng dụng chiến lược |
+| `10_IMPROVEMENTS_ROADMAP.md` | Kế hoạch cải tiến | Lập kế hoạch tương lai |
 
-### 4. Thống Kê Chi Tiết
-- ✅ Win/Loss theo từng pattern
-- ✅ Profit Factor, Win Rate
-- ✅ Real-time Dashboard trên chart
+#### Hướng Dẫn Tính Năng
+| File | Nội Dung | Mục Đích |
+|------|----------|----------|
+| `DCA_MECHANISM.md` | Giải thích cơ chế DCA | Hiểu logic thêm lệnh |
 
----
+#### Cập Nhật Phiên Bản
+| File | Nội Dung | Mục Đích |
+|------|----------|----------|
+| `V2.1_QUICK_REFERENCE.md` | Tham chiếu nhanh v2.1 | Tra cứu tính năng mới |
+| `V2.1_UPDATES_SUMMARY.md` | Tóm tắt cập nhật v2.1 | Giải thích cập nhật chi tiết |
 
-## 🚀 What's New in v2.0
+### Danh Sách File Thư Mục Code/Logic
 
-### 🆕 Major Updates (Chi tiết trong từng file)
-- 🔔 **News Embargo Filter** → [04_EXECUTOR.md](04_EXECUTOR.md)
-- 📊 **Volatility Regime** → [04_EXECUTOR.md](04_EXECUTOR.md)
-- 🎯 **ATR-Scaled Execution** → [04_EXECUTOR.md](04_EXECUTOR.md)
-- ⭐ **Extended Scoring** → [03_ARBITER.md](03_ARBITER.md)
-- 🛡️ **Risk Overlays** → [05_RISK_MANAGER.md](05_RISK_MANAGER.md)
-- 🔄 **Adaptive DCA/Trailing** → [05_RISK_MANAGER.md](05_RISK_MANAGER.md)
-
-### 📊 Expected Improvements
-- Win Rate: **+3-5%** (65% → 68-70%)
-- Profit Factor: **+0.15** (2.0 → 2.15+)
-- Max Drawdown: **≤8%** (no increase)
-
----
-
-## 📞 Hỗ Trợ
-
-Xem chi tiết trong các file documentation:
+| File | Nội Dung | Mục Đích |
+|------|----------|----------|
+| `02_DETECTORS.md` | Thuật toán detector chi tiết | Triển khai phát hiện tín hiệu |
+| `03_ARBITER.md` | Logic scoring arbiter | Triển khai scoring tín hiệu |
+| `04_EXECUTOR.md` | Chi tiết triển khai executor | Triển khai thực thi lệnh |
+| `05_RISK_MANAGER.md` | Thuật toán quản lý rủi ro | Triển khai kiểm soát rủi ro |
+| `06_STATS_DASHBOARD.md` | Triển khai dashboard thống kê | Triển khai hiển thị dữ liệu |
+| `08_MAIN_FLOW.md` | Logic code luồng chính | Hiểu luồng thực thi |
+| `MULTI_SESSION_IMPLEMENTATION.md` | Chi tiết triển khai đa phiên | Triển khai đa khung thời gian |
+| `TIMEZONE_CONVERSION.md` | Kỹ thuật chuyển đổi múi giờ | Xử lý vấn đề múi giờ |
+| `update.md` | Tài liệu sửa lỗi Bug | Sửa lỗi kỹ thuật |
 
 ---
 
----
+## 🔍 Cách Tìm Thông Tin
 
-## 📊 v2.0 Implementation Checklist
+### Tìm Theo Chủ Đề
 
-### Priority 1: Core Updates (Week 1)
-- [ ] News Embargo Filter → `04_EXECUTOR.md`
-- [ ] Volatility Regime Detection → `04_EXECUTOR.md`
-- [ ] ATR-Scaled Execution → `04_EXECUTOR.md`
-- [ ] Extended Arbiter Scoring → `03_ARBITER.md`
+**Muốn tìm hiểu quy tắc giao dịch**:
+- Tất cả quy tắc → `business/TRADING_RULES.md` ⭐
+- Quy tắc entry → `business/ENTRY_RULES.md`
+- Quản lý vốn → `business/RISK_MANAGEMENT_RULES.md`
+- Thời gian trade → `business/TRADING_SCHEDULE.md`
+- Cơ chế DCA → `business/DCA_MECHANISM.md`
 
-### Priority 2: Risk & Analytics (Week 2)
-- [ ] Risk Overlays (MaxTrades, Cooldown) → `05_RISK_MANAGER.md`
-- [ ] Adaptive DCA by Regime → `05_RISK_MANAGER.md`
-- [ ] Adaptive Trailing by Regime → `05_RISK_MANAGER.md`
-- [ ] Stats Enhancement (regime tracking)
+**Muốn tìm hiểu khái niệm giao dịch**:
+- BOS (Break of Structure) → `code_logic/02_DETECTORS.md` (Section: BOS)
+- Order Block → `code_logic/02_DETECTORS.md` (Section: Order Block)
 
-### Testing & Validation
-- [ ] Backtest v1.2 (baseline)
-- [ ] Backtest v2.0 (each feature)
-- [ ] Backtest v2.0 (full integration)
-- [ ] Forward test (demo 2 weeks)
+**Muốn điều chỉnh tham số**:
+- Tất cả tham số → `business/07_CONFIGURATION.md`
+- Cài đặt đề xuất → `business/07_CONFIGURATION.md` (Section: Presets)
 
----
+**Muốn hiểu logic code**:
+- Luồng phát hiện → `code_logic/02_DETECTORS.md`
+- Hệ thống scoring → `code_logic/03_ARBITER.md`
+- Luồng thực thi → `code_logic/08_MAIN_FLOW.md`
 
-## 🎯 Expected Results (v2.0)
-
-| Metric | v1.2 Baseline | v2.0 Target | Impact |
-|--------|---------------|-------------|--------|
-| Win Rate | 65% | 68-70% | +3-5% |
-| Profit Factor | 2.0 | 2.15+ | +0.15 |
-| Max Drawdown | 8% | ≤8% | No increase |
-| Trades/Day | 5 | 4-6 | ±20% |
-| Consecutive Loss | 5 | ≤3 | Reduced |
-
-**Source**: Based on UPDATE_SPEC analysis & Step.md recommendations
+**Muốn xem ví dụ thực tế**:
+- Ví dụ giao dịch hoàn chỉnh → `business/09_EXAMPLES.md`
+- Ví dụ các mô hình khác nhau → `business/09_EXAMPLES.md` (các Section)
 
 ---
 
-## 🔮 v2.0+ Future Improvements
+## 📝 Hướng Dẫn Bảo Trì Tài Liệu
 
-### 📋 Overview
+### Khi thêm tài liệu mới:
+1. **Liên quan đến kinh doanh/chiến lược** → Đặt vào thư mục `business/`
+2. **Liên quan đến code/thuật toán** → Đặt vào thư mục `code_logic/`
+3. **Cập nhật README này** → Thêm tài liệu mới vào danh sách tương ứng
 
-Dựa trên phân tích chi tiết logic ICT/SMC, đã xác định được **4 điểm cải tiến chính**:
-
-#### 1. **Sweep + BOS Requirement** 🔴 Critical
-```
-Current: BOS + OB → Valid (không cần sweep)
-Proposed: Sweep + BOS + OB/FVG → Valid (ICT gold standard)
-
-Expected Impact:
-  ✅ Win rate: +5-8%
-  ✅ Trade quality: Higher
-  ⚠️ Trade count: -30-40%
-```
-
-#### 2. **Limit Order Entry** 🔴 Critical  
-```
-Current: Stop orders (chase breakout)
-Proposed: Limit orders at POI (wait for pullback)
-
-Example:
-  Stop:  Entry 2651.50 | SL 2648.00 | Risk 3.50 pts | RR 2:1
-  Limit: Entry 2649.00 | SL 2648.00 | Risk 1.00 pt  | RR 9:1 ⭐
-
-Expected Impact:
-  ✅ RR ratio: 2.0 → 3.5-4.0
-  ✅ Win rate: +2-4%
-  ⚠️ Fill rate: 95% → 65% (trade-off)
-```
-
-#### 3. **MA Trend Filter** 🟡 High Priority
-```
-Current: Only price structure (MTF bias)
-Proposed: Add EMA 20/50 crossover
-
-Expected Impact:
-  ✅ Reduce counter-trend losses: -60-70%
-  ✅ Win rate: +3-5%
-  ⚠️ Trade count: -15-20%
-```
-
-#### 4. **WAE Momentum Confirmation** 🟡 High Priority
-```
-Current: Body size > ATR threshold
-Proposed: Waddah Attar Explosion indicator
-
-Expected Impact:
-  ✅ Filter weak breakouts: -25-30% trades
-  ✅ Win rate: +4-6%
-  ✅ Profit factor: +0.2-0.3
-```
+### Khi sửa đổi tài liệu hiện có:
+- Giữ tài liệu trong thư mục ban đầu
+- Nếu tính chất nội dung thay đổi, di chuyển đến thư mục tương ứng
+- Cập nhật giải thích trong README này
 
 ---
 
-### 📊 Combined Impact Estimate
+## 🚀 Bắt Đầu Nhanh
 
-| Metric | Current v1.2 | Target v2.0+ | Improvement |
-|--------|--------------|--------------|-------------|
-| **Win Rate** | 65% | **72-75%** | +7-10% |
-| **Profit Factor** | 2.0 | **2.3-2.5** | +15-25% |
-| **Avg RR** | 2.0 | **3.0-3.5** | +50-75% |
-| **Trade Count** | 5-6/day | **3-4/day** | -30-40% |
-| **Trade Quality** | Mixed | **High** | ⭐ |
+### Bước 1: Chọn Vai Trò Của Bạn
+- **Trader** → Đọc thư mục `business/`
+- **Developer** → Đọc thư mục `code_logic/`
 
----
+### Bước 2: Đọc Theo Thứ Tự
+- Trader: README → SYSTEM_OVERVIEW → EXAMPLES → CONFIGURATION
+- Developer: DETECTORS → ARBITER → EXECUTOR → MAIN_FLOW
 
-### 🎯 Implementation Status
-
-- ✅ **Documentation Complete** - All 4 improvements documented
-  - [10_IMPROVEMENTS_ROADMAP.md](10_IMPROVEMENTS_ROADMAP.md) - Master plan
-  - [03_ARBITER.md](03_ARBITER.md#-proposed-improvements-based-on-analysis) - Confluence logic
-  - [04_EXECUTOR.md](04_EXECUTOR.md#-proposed-improvements-limit-order-entry) - Entry methods
-
-- 🚧 **Code Implementation** - Not started
-  - Phase 1 (Week 1-2): Sweep + BOS requirement
-  - Phase 2 (Week 3): Limit order entry
-  - Phase 3 (Week 4): MA filter & WAE
-  - Phase 4 (Week 5): Testing & validation
+### Bước 3: Hiểu Sâu Hơn
+- Đọc tài liệu chi tiết về chủ đề cụ thể theo nhu cầu
+- Tham khảo triển khai code (thư mục `Include/`)
 
 ---
 
-### 📖 Quick Links
+## 📞 Cần Giúp Đỡ?
 
-- **[Full Roadmap](10_IMPROVEMENTS_ROADMAP.md)** - Chi tiết đầy đủ
-- **[Arbiter Improvements](03_ARBITER.md#-proposed-improvements-based-on-analysis)** - Confluence logic
-- **[Executor Improvements](04_EXECUTOR.md#-proposed-improvements-limit-order-entry)** - Entry methods
+Nếu tài liệu thiếu thông tin hoặc không rõ ràng:
+1. Kiểm tra file code liên quan (`Include/*.mqh`)
+2. Xem tài liệu ví dụ (`business/09_EXAMPLES.md`)
+3. Hỏi câu hỏi cụ thể để được làm rõ
 
 ---
 
-**Version**: 1.2 → 2.0 (in development)  
-**Date**: October 2025  
-**Timeframe**: M15/M30 (M30 focus for v2.0)  
-**Symbol**: XAUUSD
+## 🔧 Development Workflows
 
+### Auto Build & Check
+
+Hệ thống tự động compile và kiểm tra errors sau mỗi lần chỉnh sửa code:
+
+- **Workflow**: `.agent/workflows/build-ea.md`
+- **Command**: `.agent/commands/build-and-check.ps1`
+- **Tự động chạy**: Sau khi edit file `.mq5` hoặc `.mqh`
+- **Kết quả**: Hiển thị errors/warnings với file và line number
+
+### Auto Update Documentation
+
+Hệ thống tự động cập nhật documentation khi code hoặc requirements thay đổi:
+
+- **Workflow**: `.agent/workflows/update-docs.md`
+- **Quy tắc**: Cập nhật docs gốc, không tạo file mới với version/timeline
+- **Mapping**: Tự động map code files → documentation files
+- **Tự động chạy**: Khi code logic hoặc business rules thay đổi
+
+Xem chi tiết trong `.cursorrules` và `.agent/README.md`.
+
+---
+
+**Cập nhật lần cuối**: 2025-01-XX  
+**Phiên bản tài liệu**: v2.1  
+**Trạng thái bảo trì**: ✅ Đang bảo trì tích cực

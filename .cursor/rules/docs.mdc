@@ -1,11 +1,30 @@
 ---
 alwaysApply: true
 ---
-### Hiểu
-- Phải luân hiểu kỹ docs nói gì? lập luận chính xác, xem xét các điều kiện 
-- Nếu thiêu context thì phải hỏi lại cho rõ không được tự ý suy đoán 
-- Sau khi user đưa ra quyết định thì cập nhật lại docs cho đúng 
 
-### Hành động 
-- Có nhiều file tại liệu sau khi viết bot hãy lược bỏ những nội dung dưa thừa không liên quan đến code hay logic code thì bỏ qua, những thứ liên quan đến logic bot hay thông tin về bot luôn phải ghi lại đầy đủ, ** Không dài dòng **
-- Cập nhật tài liệu mô tả không tạo file mới. làm giống git
+# Agent Rules - Documentation Management
+
+## Hiểu
+
+1. **Đọc kỹ** - Hiểu rõ docs/context trước khi hành động
+2. **Lập luận chính xác** - Xem xét tất cả điều kiện, không bỏ sót edge cases
+3. **Thiếu context → Hỏi** - Không tự suy đoán khi thiếu thông tin
+4. **Cập nhật sau quyết định** - Khi user quyết định, update docs cho khớp
+
+## Hành động
+
+1. **Lược bỏ thừa** - Sau khi viết bot, xóa nội dung không liên quan đến code/logic
+2. **Giữ logic** - Mọi thông tin về bot logic phải ghi đầy đủ
+3. **Không dài dòng** - Viết ngắn gọn, súc tích
+4. **Update, không tạo mới** - Sửa file hiện có thay vì tạo file mới (giống git commits)
+
+## Quy trình Documentation
+
+```
+1. Đọc docs hiện có
+2. Hiểu context đầy đủ
+3. Hỏi nếu thiếu thông tin
+4. Thực hiện thay đổi code
+5. Update docs tương ứng (không tạo mới)
+6. Lược bỏ nội dung thừa
+```

@@ -1,0 +1,151 @@
+# Cursor Rules - MQL5 EA Development
+
+## 🔄 Auto Build & Check Workflow
+
+### ⚡ Tự Động Chạy Command
+
+Sau mỗi lần chỉnh sửa file `.mq5` hoặc `.mqh`, Cursor **PHẢI TỰ ĐỘNG** chạy:
+
+```powershell
+.agent/commands/build-and-check.ps1
+```
+
+### 📋 Quy Trình Tự Động
+
+1. **Compile EA** - Chạy MetaEditor CLI để compile
+2. **Đọc log file** - Tự động đợi và đọc log sau khi compile
+3. **Phân tích kết quả** - Trích xuất errors/warnings từ log
+4. **Hiển thị kết quả** - Format rõ ràng với màu sắc
+5. **Đề xuất fix** - Gợi ý cách sửa lỗi nếu có
+
+### 🎯 Khi Nào Chạy
+
+Cursor tự động chạy command khi:
+- ✅ **Sau khi edit** file `.mq5` hoặc `.mqh` và save
+- ✅ **User yêu cầu** "compile EA", "check errors", "build EA"
+- ✅ **Trước khi commit** code changes (nếu có git hook)
+- ✅ **Khi user hỏi** "có lỗi gì không?" hoặc "EA compile được chưa?"
+
+### 📊 Kết Quả
+
+**✅ Success (exit code 0):**
+- "0 error(s)" → Continue, có thể commit
+- Hiển thị warnings nếu có (không block)
+
+**❌ Failed (exit code 1):**
+- "X error(s)" → **KHÔNG commit**, hiển thị errors chi tiết
+- List errors với file và line number
+- Đề xuất cách fix
+
+### 📁 Files Liên Quan
+
+- **Command Script**: `.agent/commands/build-and-check.ps1`
+- **Workflow Docs**: `.agent/workflows/build-ea.md`
+- **This Rules File**: `.cursorrules`
+
+### 🔧 Custom Paths
+
+Nếu paths khác, có thể override:
+
+```powershell
+.agent/commands/build-and-check.ps1 `
+    -EAPath "custom/path/to/ea.mq5" `
+    -MetaEditor "custom/path/to/metaeditor64.exe"
+```
+
+### 💡 Lưu Ý
+
+- Command script tự động detect paths từ EA file
+- Log file được tạo cùng thư mục với EA file
+- Timeout: 5 giây để đợi log file xuất hiện
+- Exit code: 0 = success, 1 = failed (Cursor sẽ dựa vào đây)
+
+---
+
+## 📚 Auto Update Knowledge (Docs)
+
+### ⚡ Tự Động Cập Nhật Documentation
+
+Khi có thay đổi về code, logic, hoặc yêu cầu từ user, Cursor **PHẢI TỰ ĐỘNG** cập nhật docs tương ứng.
+
+### 📋 Quy Tắc Cập Nhật Docs
+
+1. **Cập nhật docs gốc** - KHÔNG tạo file mới với timeline/version
+2. **Cập nhật trực tiếp** - Sửa file docs hiện có, không tạo bản sao
+3. **Giữ cấu trúc** - Giữ nguyên cấu trúc thư mục `docs/v2/`
+4. **Cập nhật đúng file** - Tìm và cập nhật file docs liên quan đến thay đổi
+
+### 🎯 Khi Nào Cập Nhật
+
+Cursor tự động cập nhật docs khi:
+- ✅ **Thay đổi code logic** → Cập nhật `docs/v2/code_logic/*.md`
+- ✅ **Thay đổi business rules** → Cập nhật `docs/v2/business/*.md`
+- ✅ **Thay đổi configuration** → Cập nhật `docs/v2/business/07_CONFIGURATION.md`
+- ✅ **Thay đổi entry rules** → Cập nhật `docs/v2/business/ENTRY_RULES.md`
+- ✅ **Thay đổi risk management** → Cập nhật `docs/v2/business/RISK_MANAGEMENT_RULES.md`
+- ✅ **Thay đổi detectors** → Cập nhật `docs/v2/code_logic/02_DETECTORS.md`
+- ✅ **User yêu cầu** "update docs", "cập nhật tài liệu", "fix documentation"
+
+### 📁 Mapping Code → Docs
+
+| Code File | Documentation File |
+|-----------|-------------------|
+| `Include/detectors.mqh` | `docs/v2/code_logic/02_DETECTORS.md` |
+| `Include/arbiter.mqh` | `docs/v2/code_logic/03_ARBITER.md` |
+| `Include/executor.mqh` | `docs/v2/code_logic/04_EXECUTOR.md` |
+| `Include/risk_manager.mqh` | `docs/v2/code_logic/05_RISK_MANAGER.md` |
+| `Include/stats_manager.mqh` | `docs/v2/code_logic/06_STATS_DASHBOARD.md` |
+| `Experts/V2-oat.mq5` | `docs/v2/code_logic/08_MAIN_FLOW.md` |
+| Config parameters | `docs/v2/business/07_CONFIGURATION.md` |
+| Entry logic | `docs/v2/business/ENTRY_RULES.md` |
+| Risk rules | `docs/v2/business/RISK_MANAGEMENT_RULES.md` |
+| Trading rules | `docs/v2/business/TRADING_RULES.md` |
+| System overview | `docs/v2/business/01_SYSTEM_OVERVIEW.md` |
+
+### ❌ KHÔNG ĐƯỢC LÀM
+
+- ❌ **KHÔNG** tạo file mới với tên `*_v2.md`, `*_2025.md`, `*_updated.md`
+- ❌ **KHÔNG** tạo file timeline hoặc changelog riêng
+- ❌ **KHÔNG** giữ lại version cũ trong cùng file
+- ❌ **KHÔNG** tạo file backup trong docs folder
+
+### ✅ PHẢI LÀM
+
+- ✅ **Cập nhật trực tiếp** file docs gốc
+- ✅ **Giữ nguyên tên file** và cấu trúc
+- ✅ **Cập nhật nội dung** theo thay đổi mới nhất
+- ✅ **Xóa thông tin cũ** nếu không còn đúng
+- ✅ **Thêm thông tin mới** nếu có tính năng mới
+
+### 🔍 Quy Trình Cập Nhật
+
+1. **Xác định file docs cần cập nhật** - Dựa vào code file đã thay đổi
+2. **Đọc file docs hiện tại** - Hiểu nội dung hiện có
+3. **So sánh với code mới** - Tìm điểm khác biệt
+4. **Cập nhật docs** - Sửa trực tiếp file docs gốc
+5. **Xóa thông tin cũ** - Loại bỏ phần không còn đúng
+6. **Thêm thông tin mới** - Bổ sung logic/tính năng mới
+
+### 📝 Ví Dụ
+
+**Khi thay đổi `detectors.mqh`:**
+- ✅ Cập nhật: `docs/v2/code_logic/02_DETECTORS.md`
+- ❌ KHÔNG tạo: `docs/v2/code_logic/02_DETECTORS_v2.md`
+
+**Khi thay đổi entry logic:**
+- ✅ Cập nhật: `docs/v2/business/ENTRY_RULES.md`
+- ❌ KHÔNG tạo: `docs/v2/business/ENTRY_RULES_updated.md`
+
+**Khi user yêu cầu "cập nhật docs về DCA":**
+- ✅ Cập nhật: `docs/v2/business/DCA_MECHANISM.md`
+- ❌ KHÔNG tạo file mới
+
+---
+
+## Code Style Rules
+
+- Luôn ghi log vào bot để User có thể debug
+- Tạo dashboard trong backtest
+- Ưu tiên sự đơn giản, dễ đọc và dễ bảo trì
+- Luôn trả lời bằng tiếng Việt, giữ thuật ngữ chuyên ngành bằng tiếng Anh
+
