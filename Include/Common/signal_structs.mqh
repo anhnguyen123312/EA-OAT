@@ -205,6 +205,31 @@ struct RiskGateResult {
     double   maxLotSize;         // Lot size tối đa
     bool     tradingHalted;      // Bị halt (MDD)?
     string   reason;             // Lý do nếu canTrade = false
+    
+    // ⭐ Position tracking (NEW)
+    double   filledRiskPips;    // Số pip đã vào lệnh (filled positions)
+    double   filledLotSize;     // Số lot đã vào lệnh (filled positions)
+    double   pendingRiskPips;    // Số pip đang trong lệnh chờ (pending orders)
+    double   pendingLotSize;    // Số lot đang trong lệnh chờ (pending orders)
+    
+    // Calculated remaining
+    double   remainingRiskPips; // Số pip còn lại có thể risk = maxRiskPips - filledRiskPips - pendingRiskPips
+    double   remainingLotSize;  // Số lot còn lại = maxLotSize - filledLotSize - pendingLotSize
+};
+
+//+------------------------------------------------------------------+
+//| DCA Order Structure (Chi tiết từng DCA order)                   |
+//+------------------------------------------------------------------+
+struct DCAOrder {
+    int      level;              // DCA level (1, 2, 3)
+    int      direction;          // 1=BUY, -1=SELL
+    int      entryType;          // ENTRY_TYPE (LIMIT, STOP, MARKET)
+    string   reason;             // "OB + FVG", "At current price", etc.
+    double   entryPrice;         // Entry price
+    double   slPrice;            // Stop Loss (sync với original)
+    double   tpPrice;            // Take Profit (sync với original)
+    double   lotMultiplier;      // Lot multiplier (0.5, 0.33, etc.)
+    double   triggerR;           // Trigger tại +XR (0.75R, 1.5R, etc.)
 };
 
 //+------------------------------------------------------------------+
@@ -214,11 +239,14 @@ struct DCAPlan {
     bool     enabled;            // Có enable DCA không?
     int      maxLevels;          // Số level DCA tối đa (0, 1, 2, ...)
     
-    // Level 1
+    // ⭐ DCA Orders Array (chi tiết từng DCA order)
+    DCAOrder dcaOrders[];        // Array of DCA orders
+    
+    // Level 1 (backward compatibility)
     double   level1_triggerR;    // Trigger tại +XR (ví dụ: 0.75R)
     double   level1_lotMultiplier; // Lot size = original × multiplier (ví dụ: 0.5)
     
-    // Level 2
+    // Level 2 (backward compatibility)
     double   level2_triggerR;    // Trigger tại +XR (ví dụ: 1.5R)
     double   level2_lotMultiplier; // Lot size = original × multiplier (ví dụ: 0.33)
     
@@ -246,7 +274,9 @@ struct BEPlan {
 //+------------------------------------------------------------------+
 struct TrailPlan {
     bool     enabled;            // Có enable trailing không?
+    double   startPrice;         // ⭐ Start price (khi bắt đầu BE, ví dụ: 4260)
     double   startR;             // Bắt đầu tại +XR (ví dụ: 1.0R)
+    double   stepPips;           // ⭐ Move mỗi X pips (ví dụ: 30 pips)
     double   stepR;              // Move mỗi +XR (ví dụ: 0.5R)
     double   distanceATR;        // Distance = X × ATR (ví dụ: 2.0)
     bool     lockProfit;         // Lock profit khi trail?
@@ -279,9 +309,9 @@ struct MethodSignal {
     double       score;              // Điểm chất lượng (0-1000)
     
     // Entry calculation (tự tính trong method)
-    double       entryPrice;         // Entry price
-    double       slPrice;            // Stop Loss
-    double       tpPrice;            // Take Profit
+    double       entryPrice;         // Entry price (EN)
+    double       slPrice;            // Stop Loss (SL)
+    double       tpPrice;            // Take Profit (TP)
     double       rr;                 // Risk:Reward ratio
     
     // Entry method
@@ -296,18 +326,86 @@ struct MethodSignal {
 };
 
 //+------------------------------------------------------------------+
-//| Execution Order Structure (Input cho Execution Layer)          |
+//| Order Status Enum                                                |
+//+------------------------------------------------------------------+
+enum ENUM_ORDER_STATUS {
+    ORDER_STATUS_PENDING = 0,   // Đang chờ execution
+    ORDER_STATUS_FILLED = 1,    // Đã filled
+    ORDER_STATUS_CANCELLED = 2, // Đã cancel
+    ORDER_STATUS_EXPIRED = 3   // Đã expire
+};
+
+//+------------------------------------------------------------------+
+//| Pending Order Structure (Array chờ execution)                   |
+//+------------------------------------------------------------------+
+struct PendingOrder {
+    // ⭐ ID tracking
+    string      orderID;         // Unique ID để tracking (format: "SMC_20250121_001")
+    datetime    createdTime;     // Thời gian tạo order
+    
+    // Order information
+    string      methodName;      // "SMC", "ICT", etc.
+    int         direction;       // 1=BUY, -1=SELL
+    int         entryType;       // ENTRY_TYPE (LIMIT, STOP, MARKET)
+    string      reason;          // "OB + FVG", etc.
+    double      entryPrice;      // Entry price (EN)
+    double      slPrice;         // Stop Loss (SL)
+    double      tpPrice;         // Take Profit (TP)
+    double      lots;            // Lot size
+    
+    // DCA information (nếu là DCA order)
+    bool        isDCA;           // Có phải DCA order không?
+    int         dcaLevel;        // DCA level (1, 2, 3) - 0 = original
+    string      parentOrderID;   // ID của order gốc (nếu là DCA)
+    
+    // Position management
+    double      bePrice;         // Breakeven price (khi trigger BE)
+    TrailPlan   trailPlan;       // Trailing stop plan
+    
+    // Status
+    ENUM_ORDER_STATUS status;   // Order status
+    ulong       ticket;          // MT5 ticket (sau khi place order)
+    
+    // Position plan reference
+    PositionPlan positionPlan;   // Full position plan
+};
+
+//+------------------------------------------------------------------+
+//| Execution Order Structure (Đã được execution)                  |
 //+------------------------------------------------------------------+
 struct ExecutionOrder {
-    int         direction;      // 1=BUY, -1=SELL
-    double      entryPrice;
-    double      slPrice;
-    double      tpPrice;
-    double      lots;
-    int         entryType;      // ENTRY_TYPE (LIMIT, STOP, MARKET) - use int to avoid dependency
-    string      comment;
-    PositionPlan positionPlan;  // ⭐ Kế hoạch quản lý position
-    ulong       ticket;          // Ticket sau khi place order
+    // ⭐ ID tracking
+    string      orderID;         // Unique ID (same as PendingOrder)
+    datetime    createdTime;     // Thời gian tạo order
+    datetime    filledTime;      // Thời gian filled
+    
+    // Order information
+    string      methodName;      // "SMC", "ICT", etc.
+    int         direction;       // 1=BUY, -1=SELL
+    int         entryType;       // ENTRY_TYPE
+    string      reason;          // Entry reason
+    double      entryPrice;      // Entry price (filled)
+    double      slPrice;         // Stop Loss
+    double      tpPrice;         // Take Profit
+    double      lots;            // Lot size (filled)
+    
+    // DCA information
+    bool        isDCA;           // Có phải DCA order không?
+    int         dcaLevel;        // DCA level (0 = original, 1/2/3 = DCA)
+    string      parentOrderID;   // ID của order gốc
+    
+    // Position management
+    double      bePrice;         // Breakeven price
+    bool        beTriggered;      // BE đã trigger chưa?
+    TrailPlan   trailPlan;       // Trailing stop plan
+    double      currentSL;        // Current SL (có thể đã move)
+    
+    // MT5 tracking
+    ulong       ticket;          // MT5 ticket
+    bool        isOpen;           // Position còn mở không?
+    
+    // Position plan reference
+    PositionPlan positionPlan;   // Full position plan
 };
 
 //+------------------------------------------------------------------+

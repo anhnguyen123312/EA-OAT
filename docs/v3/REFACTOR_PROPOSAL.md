@@ -12,7 +12,7 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
 2. ✅ **Detection Layer modular** - Chia theo Phương pháp (SMC, ICT), mỗi phương pháp một file riêng
 3. ✅ **Mỗi detector tự tính entry/sl/tp và chấm điểm**
 4. ✅ **Mỗi detector output kế hoạch DCA, BE, Trail** - Lập kế hoạch quản lý position hoàn chỉnh
-5. ✅ **ARBITRATION quyết định entry và format xuống EXECUTION**
+5. ✅ **ARBITRATION quyết định entry và format xuống EXECUTION** 
 6. ✅ **EXECUTION thực hiện và theo dõi lệnh theo kế hoạch**
 7. ✅ **Dashboard hiển thị thông số**
 

@@ -7,6 +7,7 @@
 #property strict
 
 #include "..\Common\signal_structs.mqh"
+#include "method_config.mqh"
 
 //+------------------------------------------------------------------+
 //| CMethodBase - Base class for all trading methods                 |
@@ -16,6 +17,7 @@ protected:
     string   m_methodName;           // "SMC", "ICT", etc.
     string   m_symbol;
     ENUM_TIMEFRAMES m_timeframe;
+    bool     m_configRegistered;    // Config đã register chưa?
     
 public:
     CMethodBase();
@@ -36,8 +38,31 @@ public:
     }
     virtual double Score(const MethodSignal &signal) { return 0.0; }
     
+    // Config methods - must be implemented by derived classes
+    virtual MethodConfig GetConfig() {
+        MethodConfig empty;
+        empty.methodName = m_methodName;
+        empty.enabled = false;
+        empty.showInEA = false;
+        return empty;
+    }
+    virtual bool RegisterConfig() {
+        if(m_configRegistered) return true;
+        MethodConfig cfg = GetConfig();
+        if(cfg.methodName == "") return false;
+        m_configRegistered = g_MethodConfigManager.RegisterConfig(cfg);
+        return m_configRegistered;
+    }
+    virtual bool UnregisterConfig() {
+        if(!m_configRegistered) return true;
+        bool result = g_MethodConfigManager.UnregisterConfig(m_methodName);
+        if(result) m_configRegistered = false;
+        return result;
+    }
+    
     // Helper
     string GetMethodName() { return m_methodName; }
+    bool IsConfigRegistered() { return m_configRegistered; }
 };
 
 //+------------------------------------------------------------------+
@@ -47,6 +72,7 @@ CMethodBase::CMethodBase() {
     m_methodName = "BASE";
     m_symbol = "";
     m_timeframe = PERIOD_CURRENT;
+    m_configRegistered = false;
 }
 
 //+------------------------------------------------------------------+

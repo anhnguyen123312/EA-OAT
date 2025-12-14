@@ -40,6 +40,16 @@ struct RiskGateResult {
     double   maxLotSize;         // Lot size tối đa
     bool     tradingHalted;      // Bị halt (MDD)?
     string   reason;             // Lý do nếu canTrade = false
+    
+    // ⭐ Position tracking (NEW)
+    double   filledRiskPips;    // Số pip đã vào lệnh (filled positions)
+    double   filledLotSize;     // Số lot đã vào lệnh (filled positions)
+    double   pendingRiskPips;    // Số pip đang trong lệnh chờ (pending orders)
+    double   pendingLotSize;    // Số lot đang trong lệnh chờ (pending orders)
+    
+    // Calculated remaining
+    double   remainingRiskPips; // Số pip còn lại = maxRiskPips - filledRiskPips - pendingRiskPips
+    double   remainingLotSize;  // Số lot còn lại = maxLotSize - filledLotSize - pendingLotSize
 };
 ```
 
@@ -48,6 +58,14 @@ struct RiskGateResult {
 - `maxRiskPips`: Số pip tối đa có thể risk (tính từ risk% và balance)
 - `maxLotSize`: Lot size tối đa (dynamic theo equity hoặc fixed)
 - `reason`: Lý do cụ thể nếu `canTrade = false` (ví dụ: "Daily MDD limit reached", "Outside trading session", "Spread too wide")
+- **`filledRiskPips`**: Tổng số pip đã risk trong các positions đã filled
+- **`filledLotSize`**: Tổng số lot đã vào lệnh (filled positions)
+- **`pendingRiskPips`**: Tổng số pip đang risk trong các pending orders
+- **`pendingLotSize`**: Tổng số lot đang trong pending orders
+- **`remainingRiskPips`**: Số pip còn lại có thể risk = `maxRiskPips - filledRiskPips - pendingRiskPips`
+- **`remainingLotSize`**: Số lot còn lại = `maxLotSize - filledLotSize - pendingLotSize`
+
+**Lưu ý:** Methods nên sử dụng `remainingRiskPips` và `remainingLotSize` thay vì `maxRiskPips` và `maxLotSize` để đảm bảo không vượt quá giới hạn khi đã có positions/orders.
 
 ---
 
