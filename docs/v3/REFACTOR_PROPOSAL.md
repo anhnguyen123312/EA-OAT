@@ -52,31 +52,38 @@ Tài liệu này mô tả **thiết kế mới** cho bot EA với cấu trúc **
 │  └─ Method-specific strategy                                │
 └─────────────────────────────────────────────────────────────┘
                           │
-                          ▼ (ExecutionOrder)
+                         ▼ (ExecutionOrder Arrays từ Layer 1)
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 2: EXECUTION (executor.mqh)                          │
-│  ├─ PlaceOrder() → đặt lệnh                                │
-│  ├─ TrackOrder() → theo dõi pending                         │
-│  ├─ ManagePositions() → BE, Trail, DCA                     │
-│  └─ UpdateOrderStatus() → cập nhật trạng thái              │
-└─────────────────────────────────────────────────────────────┘
-                          │
-                          ▼ (filled orders)
-┌─────────────────────────────────────────────────────────────┐
-│  LAYER 3: RISK MANAGEMENT (risk_manager.mqh)                │
-│  ├─ TrackPosition() → lưu thông tin                        │
-│  ├─ ManageDCA() → thêm lệnh DCA                            │
-│  ├─ ManageBE() → move SL về entry                          │
-│  ├─ ManageTrailing() → trailing stop                       │
-│  └─ CheckBasket() → basket TP/SL                           │
+│  LAYER 2: EXECUTION & POSITION RISK                        │
+│      (executor.mqh + risk_manager.mqh)                     │
+│                                                             │
+│  **Nguồn dữ liệu vào**                                      │
+│  - ExecutionOrder[] từ Layer 1:                            │
+│    - Kế hoạch lệnh đầy đủ: direction, entry, SL, TP, lot   │
+│      đề xuất, PositionPlan (DCA/BE/Trail) kèm theo.        │
+│  - RiskGateResult từ Layer 0:                              │
+│    - Khung risk/lot tổng còn lại (remainingRisk/lot).      │
+│                                                             │
+│  **Nhiệm vụ chính**                                         │
+│  - Phân bổ budget risk/lot cho từng setup dựa trên         │
+│    RiskGateResult (scale lot nếu cần).                      │
+│  - Đặt lệnh (pending/market) đúng theo ExecutionOrder.     │
+│  - Quản lý pending orders: TTL theo bar, hủy khi hết hạn.  │
+│  - Khi lệnh khớp: tạo PositionState và:                     │
+│    - DCA add-on theo plan.                                  │
+│    - Breakeven (move SL → entry).                          │
+│    - Trailing stop theo ATR/structure.                      │
+│    - Basket TP/SL nếu bật.                                  │
+│  - Cập nhật risk/lot thực tế đã dùng và còn lại để lần     │
+│    RiskGate tiếp theo đọc được.                             │
 └─────────────────────────────────────────────────────────────┘
                           │
                           ▼ (all data)
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 4: ANALYTICS (stats_manager.mqh + dashboard.mqh)     │
+│  LAYER 3: ANALYTICS (stats_manager.mqh + dashboard.mqh)     │
 │  ├─ TrackTrade() → lưu trade vào stats                     │
 │  ├─ UpdateDashboard() → hiển thị real-time                 │
-│  └─ GenerateReport() → báo cáo                           │
+│  └─ GenerateReport() → báo cáo                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 

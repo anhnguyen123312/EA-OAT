@@ -52,8 +52,7 @@ Include/
 1. **`*_method.mqh`** - Main entry point, kế thừa `CMethodBase`, implement interface
 2. **`*_detectors.mqh`** - Tất cả detectors của phương pháp (BOS, Sweep, OB, FVG, Momentum, etc.)
 3. **`*_calculator.mqh`** - Logic tính Entry, SL, TP dựa trên structure/pattern
-4. **`*_scorer.mqh`** - Logic chấm điểm signal (score từ 0-1000+)
-5. **`*_risk_plan.mqh`** - Strategy quản lý position: BE plan, DCA plan, Trail plan
+4. **`*_risk_plan.mqh`** - Strategy quản lý position: BE plan, DCA plan, Trail plan
 
 **Lợi ích:**
 - ✅ Mỗi phương pháp tự chứa, không phụ thuộc phương pháp khác
@@ -81,9 +80,8 @@ Include/
 │  │  │    ├─ FindOB()                                     │  │
 │  │  │    └─ FindFVG()                                    │  │
 │  │  ├─ 4. Build candidate (combine signals)              │  │
-│  │  ├─ 5. Score candidate (smc_scorer.mqh)              │  │
-│  │  ├─ 6. Calculate Entry/SL/TP (smc_calculator.mqh)    │  │
-│  │  └─ 7. Create PositionPlan (smc_risk_plan.mqh)       │  │
+│  │  ├─ 5. Calculate Entry/SL/TP (smc_calculator.mqh)    │  │
+│  │  └─ 6. Create PositionPlan (smc_risk_plan.mqh)       │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                           │
@@ -109,9 +107,6 @@ public:
     
     // Create position management plan
     virtual PositionPlan CreatePositionPlan(const MethodSignal &signal) = 0;
-    
-    // Score signal (optional, can use signal.score)
-    virtual double Score(const MethodSignal &signal) = 0;
     
     // ⭐ Config methods (NEW)
     virtual MethodConfig GetConfig() = 0;
