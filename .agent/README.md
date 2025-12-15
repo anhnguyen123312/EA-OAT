@@ -1,3 +1,24 @@
+## Agent Workspace cho EA SMC/ICT v2.1
+
+Thư mục `.agent/` dùng chung cho **Cursor**, **Claude** (và các AI khác) để:
+
+- **Chuẩn hóa context**: Luôn hiểu đúng về EA và kiến trúc 5 layers
+- **Giới hạn phạm vi code**: Chỉ tập trung vào các file EA chính, bỏ qua phần không liên quan
+- **Tái sử dụng workflows/commands**: Build, test, phân tích lỗi, cập nhật docs
+
+### Cấu trúc chính
+
+- `.agent/agents/`  
+  - Cấu hình riêng cho từng AI (Cursor, Claude, …)
+- `.agent/workflows/`  
+  - Các quy trình chuẩn (init context, debug, refactor, …)
+- `.agent/commands/`  
+  - Script dùng chung (build & check EA, backtest automation, …)
+- `.agent/knowledge/`  
+  - Lưu yêu cầu của user, context hiện tại cho EA
+
+Tất cả AI tools nên **đọc file trong `.agent/` trước khi đụng vào code**.
+
 # Cursor Agent - MQL5 EA Development
 
 Thư mục này chứa các workflows và commands để Cursor tự động làm việc với MQL5 EA.

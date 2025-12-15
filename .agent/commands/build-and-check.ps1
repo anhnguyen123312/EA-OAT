@@ -1,3 +1,55 @@
+Param(
+    [string]$EAPath = "c:\Users\midds\AppData\Roaming\MetaQuotes\Terminal\D0E8209F77C8CF37AD8BF550E51FF075\MQL5\Experts\V2-oat.mq5",
+    [string]$MetaEditor = "C:\Program Files\MetaTrader 5\metaeditor64.exe"
+)
+
+Write-Host "=== Build & Check EA ===" -ForegroundColor Cyan
+Write-Host "EA: $EAPath"
+Write-Host "MetaEditor: $MetaEditor"
+
+if (-not (Test-Path $MetaEditor)) {
+    Write-Host "❌ MetaEditor not found: $MetaEditor" -ForegroundColor Red
+    exit 1
+}
+
+if (-not (Test-Path $EAPath)) {
+    Write-Host "❌ EA file not found: $EAPath" -ForegroundColor Red
+    exit 1
+}
+
+# Compile EA với log
+& "$MetaEditor" /compile:"$EAPath" /log | Out-Null
+
+$logPath = [System.IO.Path]::ChangeExtension($EAPath, ".log")
+
+Write-Host "Waiting for log file: $logPath" -ForegroundColor Yellow
+
+$timeoutSeconds = 5
+$elapsed = 0
+while (-not (Test-Path $logPath) -and $elapsed -lt $timeoutSeconds) {
+    Start-Sleep -Seconds 1
+    $elapsed++
+}
+
+if (-not (Test-Path $logPath)) {
+    Write-Host "❌ Log file not found after $timeoutSeconds seconds." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "`n=== Compile Log ===" -ForegroundColor Cyan
+$logContent = Get-Content $logPath
+$logContent | ForEach-Object { Write-Host $_ }
+
+$errorsLine = $logContent | Where-Object { $_ -match "error\(s\)" -or $_ -match "errors" } | Select-Object -Last 1
+
+if ($errorsLine -and $errorsLine -match "0 error\(s\)" -or $errorsLine -match "0 errors") {
+    Write-Host "`n✅ Compile thành công (0 errors)" -ForegroundColor Green
+    exit 0
+} else {
+    Write-Host "`n❌ Compile có lỗi, vui lòng kiểm tra log bên trên." -ForegroundColor Red
+    exit 1
+}
+
 # ============================================
 # CURSOR AUTO COMMAND: Build & Check EA
 # ============================================
